@@ -1,5 +1,7 @@
 #include <nds.h>
 #include "PlayerController.h"
+#include "../Preferences.h"
+#include <stdio.h>
 
 #define DIM_WAIT_SEC 5
 #define DIM_FADE_SEC 3
@@ -59,6 +61,7 @@ void PlayerController::RestoreSubScreen()
 void PlayerController::Initialize()
 {
     _view.Initialize();
+    _playing = _player->isPlaying;
 
     // sync to whatever is physically held right now, so that a button the
     // user is still holding from just before this controller was created
@@ -72,13 +75,14 @@ void PlayerController::Initialize()
     _inputProvider.PrimeCurrentState();
     _inputRepeater.Reset();
 
-    _dimWaitFrames = DIM_WAIT_SEC * _player->fvHeader->fpsNum / _player->fvHeader->fpsDen;
+    _dimWaitFrames =
+        Preferences::values[Preferences::Dim] * _player->fvHeader->fpsNum / _player->fvHeader->fpsDen;
     _dimFadeFrames = DIM_FADE_SEC * _player->fvHeader->fpsNum / _player->fvHeader->fpsDen;
     _invDimFadeFrames = 0x800000 / _dimFadeFrames;
 
     u32 totalSeconds = ((u64)_player->fvHeader->nrFrames * _player->fvHeader->fpsDen) / _player->fvHeader->fpsNum;
     _view.SetTotalTime(totalSeconds);
-    _view.SetCurrentTime(0);
+    _view.SetCurrentTime((u64)_player->curFrame * _player->fvHeader->fpsDen / _player->fvHeader->fpsNum);
 }
 
 void PlayerController::TogglePlayPause()
@@ -115,7 +119,7 @@ void PlayerController::UpdateTouch()
 
     if (_inputProvider.Triggered(KEY_TOUCH))
     {
-        if (touch.px >= 16 && touch.px < 240 && touch.py >= /*117*/ 113 && touch.py < /*121*/ 125)
+        if (touch.px >= 16 && touch.px < 240 && touch.py >= 104 && touch.py < 136)
         {
             _seekPenDown = true;
             _seekLastFrame = -1;
@@ -134,6 +138,8 @@ void PlayerController::UpdateTouch()
 
     if (_inputProvider.Released(KEY_TOUCH))
     {
+        if (_seekPenDown && _seekLastFrame >= 0)
+            SeekFrame(_seekLastFrame);
         _seekPenDown = false;
 
         if (_playPausePenDown)
@@ -153,7 +159,7 @@ void PlayerController::UpdateTouch()
 
     if (_inputProvider.Current(KEY_TOUCH) && _seekPenDown)
     {
-        int frame = ((int)touch.px - 16) * (int)_player->fvHeader->nrFrames / 224;
+        int frame = (int)((int64_t)((int)touch.px - 16) * _player->fvHeader->nrFrames / 224);
         if (frame < 0)
             frame = 0;
         else if ((u32)frame >= _player->fvHeader->nrFrames)
@@ -161,9 +167,10 @@ void PlayerController::UpdateTouch()
         if (frame != _seekLastFrame)
         {
             _seekLastFrame = frame;
-            fv_gotoNearestKeyFrame(_player, frame);
-            fv_startPlayer(_player);
-            _playing = true;
+            unsigned seconds = (u64)frame * _player->fvHeader->fpsDen / _player->fvHeader->fpsNum;
+            char preview[32];
+            snprintf(preview, sizeof(preview), "%02u:%02u", seconds / 60, seconds % 60);
+            ShowMessage(Preferences::Text("Seek destination", "Destination"), preview);
         }
     }
 }
@@ -186,13 +193,41 @@ void PlayerController::UpdateKeys()
         _lastNavActionVBlank[0] = now;
         return;
     }
-    
+
+    // Delay single-button toggles until release so either order of the
+    // START+SELECT chord opens options without also changing playback modes.
+    if (_inputProvider.Current(KEY_START) && _inputProvider.Current(KEY_SELECT) &&
+        (_inputProvider.Triggered(KEY_START) || _inputProvider.Triggered(KEY_SELECT)))
+    {
+        _startChord = _selectChord = true;
+        _pendingNavAction = NAV_ACTION_OPTIONS;
+        return;
+    }
+    if (_inputProvider.Released(KEY_START))
+    {
+        if (!_startChord && !startDebounced)
+            _pendingNavAction = NAV_ACTION_TOGGLE_LOOP;
+        _startChord = false;
+        _lastNavActionVBlank[1] = now;
+    }
+    if (_inputProvider.Released(KEY_SELECT))
+    {
+        if (!_selectChord && !selectDebounced)
+            _pendingNavAction = NAV_ACTION_TOGGLE_RANDOM;
+        _selectChord = false;
+        _lastNavActionVBlank[2] = now;
+    }
     if (!startDebounced && _inputProvider.Triggered(KEY_START))
     {
-        // --- LOGIQUE HAUT + START POUR INVERSER LES ECRANS ---
-        if (_inputProvider.Current(KEY_UP)) 
+        _startChord = _inputProvider.Current(KEY_UP) || _inputProvider.Current(KEY_DOWN);
+        if (_inputProvider.Current(KEY_SELECT))
+        {
+            _pendingNavAction = NAV_ACTION_OPTIONS;
+        }
+        else if (_inputProvider.Current(KEY_UP))
         {
             gScreenSwapped = !gScreenSwapped;
+            Preferences::values[Preferences::Screen] = gScreenSwapped;
             if (gScreenSwapped) {
                 lcdMainOnBottom();
             } else {
@@ -214,24 +249,17 @@ void PlayerController::UpdateKeys()
         {
             fv_scale_mode_t mode = fv_getScaleMode() == FV_SCALE_FIT ? FV_SCALE_STRETCH : FV_SCALE_FIT;
             fv_setScaleMode(_player, mode);
-            ShowMessage(mode == FV_SCALE_STRETCH ? "Scale: Stretch" : "Scale: Fit",
-                        "Down+START to change");
+            Preferences::values[Preferences::Scale] = mode;
+            ShowMessage(mode == FV_SCALE_STRETCH ? Preferences::Text("Picture: Stretch", "Image: Etirer")
+                                                 : Preferences::Text("Picture: Fit", "Image: Adapter"),
+                        Preferences::Text("Down+START to change", "Bas+START: changer"));
         }
-        else
-        {
-            _pendingNavAction = NAV_ACTION_TOGGLE_LOOP;
-        }
-        
-        _lastNavActionVBlank[1] = now;
+        // Plain START is handled on release.
+        if (_startChord)
+            _lastNavActionVBlank[1] = now;
         return;
     }
     
-    if (!selectDebounced && _inputProvider.Triggered(KEY_SELECT))
-    {
-        _pendingNavAction = NAV_ACTION_TOGGLE_RANDOM;
-        _lastNavActionVBlank[2] = now;
-        return;
-    }
     
     if (!nextDebounced && (_inputProvider.Triggered(KEY_R) || _inputProvider.Triggered(KEY_X)))
     {
@@ -250,31 +278,18 @@ void PlayerController::UpdateKeys()
     {
         TogglePlayPause();
     }
-    else if (_inputProvider.Triggered(KEY_LEFT))
+    else if (_inputProvider.Triggered(KEY_LEFT) || _inputRepeater.Triggered(KEY_LEFT) ||
+             _inputProvider.Triggered(KEY_RIGHT) || _inputRepeater.Triggered(KEY_RIGHT))
     {
-        _seekKeyFrame = fv_gotoPreviousKeyFrame(_player);
-        fv_startPlayer(_player);
-        _playing = true;
-    }
-    else if (_inputRepeater.Triggered(KEY_LEFT))
-    {
-        if (_seekKeyFrame > 0)
-            _seekKeyFrame--;
-        fv_gotoKeyFrame(_player, _seekKeyFrame);
-        fv_startPlayer(_player);
-        _playing = true;
-    }
-    else if (_inputProvider.Triggered(KEY_RIGHT))
-    {
-        _seekKeyFrame = fv_gotoNextKeyFrame(_player);
-        fv_startPlayer(_player);
-        _playing = true;
-    }
-    else if (_inputRepeater.Triggered(KEY_RIGHT))
-    {
-        fv_gotoKeyFrame(_player, ++_seekKeyFrame);
-        fv_startPlayer(_player);
-        _playing = true;
+        bool forward = _inputProvider.Current(KEY_RIGHT);
+        int step = (u64)Preferences::values[Preferences::Seek] * _player->fvHeader->fpsNum /
+                   _player->fvHeader->fpsDen;
+        int target = _player->curFrame + (forward ? step : -step);
+        if (target < 0)
+            target = 0;
+        if ((u32)target >= _player->fvHeader->nrFrames)
+            target = _player->fvHeader->nrFrames - 1;
+        SeekFrame(target);
     }
 }
 
@@ -283,7 +298,7 @@ void PlayerController::UpdateDim()
     // Wake-up sources for the sub screen: pausing, a touch tap, or START/SELECT
     // (loop/random confirmation toast). Navigation keys (D-pad, L/R/X/Y) and
     // automatic video chaining must NOT wake it: the screen stays dark.
-    if ((!_playing && !_videoEnded) || _inputProvider.Triggered(KEY_TOUCH) ||
+    if (_captionsVisible || (!_playing && !_videoEnded) || _inputProvider.Triggered(KEY_TOUCH) ||
         _inputProvider.Triggered(KEY_START) || _inputProvider.Triggered(KEY_SELECT))
     {
         _subScreenState = SUB_SCREEN_STATE_ACTIVE;
@@ -328,7 +343,7 @@ void PlayerController::UpdateDim()
     {
         case SUB_SCREEN_STATE_ACTIVE:
             REG_MASTER_BRIGHT_SUB = 0;
-            if (++_subScreenStateCounter >= _dimWaitFrames)
+            if (_dimWaitFrames && ++_subScreenStateCounter >= _dimWaitFrames)
             {
                 _subScreenStateCounter = 0;
                 _subScreenState = SUB_SCREEN_STATE_DIMMING;
@@ -385,7 +400,7 @@ PlayerController::NavAction PlayerController::Update()
         while (REG_DIVCNT & DIV_BUSY)
             ;
         u32 time = REG_DIV_RESULT_L;
-        if (time != _lastTime)
+        if ((int)time != _lastTime)
         {
             _lastTime = time;
             _view.SetCurrentTime(time);
@@ -441,4 +456,36 @@ void PlayerController::ShowMessage(const char* line1, const char* line2)
     // the time display drawn alongside it) doesn't wait for that next tick
     _view.Update();
     _view.VBlank();
+}
+
+void PlayerController::SetPaused(bool paused)
+{
+    if (paused == !_playing)
+        return;
+    TogglePlayPause();
+}
+
+void PlayerController::SeekFrame(u32 frame)
+{
+    bool wasPlaying = _playing;
+    int previous = _player->curFrame;
+    fv_gotoNearestKeyFrame(_player, frame);
+    // Seeking forward must advance even with widely spaced keyframes.
+    if (frame > (u32)previous && _player->curFrame <= previous &&
+        (u32)(_player->lastKeyFrame + 1) < _player->fvHeader->nrKeyFrames)
+        fv_gotoNextKeyFrame(_player);
+    fv_startPlayer(_player);
+    if (!wasPlaying)
+    {
+        // Pause the audio first; priming a still frame must not emit a burst.
+        fv_pausePlayer(_player);
+        for (int i = 0; i < 3 && !_player->readError; ++i)
+            fv_updatePlayer(_player);
+    }
+    _playing = wasPlaying;
+    unsigned seconds = (u64)_player->curFrame * _player->fvHeader->fpsDen / _player->fvHeader->fpsNum;
+    char actual[32];
+    snprintf(actual, sizeof(actual), "%02u:%02u", seconds / 60, seconds % 60);
+    _view.SetCurrentTime(seconds);
+    ShowMessage(Preferences::Text("Seek: keyframe", "Saut: image cle"), actual);
 }

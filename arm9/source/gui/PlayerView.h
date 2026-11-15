@@ -40,6 +40,9 @@ class PlayerView
     u16 _pauseIconObjAddr;
 
     bool _playing;
+    char _title[256], _state[64], _caption[129], _diagnostics[64];
+    char _notice1[33], _notice2[33], _lastLines[12][33];
+    void DrawDetails();
 
     // --- generic small on-screen text (help legend + toast messages) ---
     // each character is rendered into a 16x16 sprite (wide enough that no
@@ -92,20 +95,20 @@ class PlayerView
     int RenderDoubleDigit(SpriteEntry* oam, int digits, int x, int y);
 
 public:
+  void SetDetails(const char *title, const char *state, const char *caption, const char *diagnostics);
+  PlayerView();
 
-    PlayerView();
+  void Initialize();
+  void Update();
+  void VBlank();
 
-    void Initialize();
-    void Update();
-    void VBlank();
+  void SetTotalTime(u32 totalTime);
+  void SetCurrentTime(u32 currentTime);
 
-    void SetTotalTime(u32 totalTime);
-    void SetCurrentTime(u32 currentTime);
-
-    void SetPlaying(bool playing)
-    {
-        _playing = playing;
-    }
+  void SetPlaying(bool playing)
+  {
+      _playing = playing;
+  }
 
     // shows a temporary 1- or 2-line message (e.g. filename + loop/random
     // state) for a few seconds. line2 may be NULL for a single-line message.

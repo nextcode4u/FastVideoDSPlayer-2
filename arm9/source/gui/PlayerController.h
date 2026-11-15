@@ -8,23 +8,35 @@
 class PlayerController
 {
 public:
-    enum NavAction
-    {
-        NAV_ACTION_NONE = 0,
-        NAV_ACTION_EXIT,
-        NAV_ACTION_TOGGLE_LOOP,
-        NAV_ACTION_TOGGLE_RANDOM,
-        NAV_ACTION_NEXT,
-        NAV_ACTION_PREV,
-        NAV_ACTION_VIDEO_ENDED,
-        NAV_ACTION_SHOW_INFO
-    };
+  enum NavAction
+  {
+      NAV_ACTION_NONE = 0,
+      NAV_ACTION_EXIT,
+      NAV_ACTION_TOGGLE_LOOP,
+      NAV_ACTION_TOGGLE_RANDOM,
+      NAV_ACTION_NEXT,
+      NAV_ACTION_PREV,
+      NAV_ACTION_VIDEO_ENDED,
+      NAV_ACTION_OPTIONS,
+      NAV_ACTION_SHOW_INFO
+  };
 
-    PlayerController(fv_player_t* player);
+  PlayerController(fv_player_t *player);
 
-    void Initialize();
-    NavAction Update();
-    void ShowMessage(const char* line1, const char* line2);
+  void Initialize();
+  NavAction Update();
+  void ShowMessage(const char *line1, const char *line2);
+  void SeekFrame(u32 frame);
+  void SetPaused(bool paused);
+  bool IsPlaying() const
+  {
+      return _playing;
+  }
+  void SetDetails(const char *title, const char *state, const char *caption, const char *diagnostics)
+  {
+      _captionsVisible = caption && *caption;
+      _view.SetDetails(title, state, caption, diagnostics);
+  }
 
     // Re-lights the sub screen (backlight + master brightness) and clears the
     // "stay dark" state. Call when leaving video playback for good (back to
@@ -55,6 +67,8 @@ private:
     bool _subBacklightOff;
 
     bool _playing;
+    bool _startChord = false, _selectChord = false;
+    bool _captionsVisible = false;
     int _lastTime;
 
     bool _seekPenDown;

@@ -8,6 +8,9 @@
 #include "circle1.h"
 #include "core/uiUtil.h"
 #include "PlayerView.h"
+#include "../Preferences.h"
+#include "../MediaText.h"
+extern u32 GetDebounceTicks();
 
 PlayerView::PlayerView() : _robotoRegular10(RobotoRegular10_ntft)
 {
@@ -73,6 +76,10 @@ int PlayerView::PlaceTextLine(SpriteEntry* oams, const u16* tileAddr, int len, i
 
 void PlayerView::Initialize()
 {
+    _subObj.SetState(0);
+    _subOam.Clear();
+    memset(_lastLines, 0xff, sizeof(_lastLines));
+    _title[0] = _state[0] = _caption[0] = _diagnostics[0] = 0;
     decompress(playBgTiles, BG_GFX_SUB, LZ77Vram);
     decompress(playBgMap, (u8*)BG_GFX_SUB + 0x800, LZ77Vram);
     dmaCopyWords(3, playBgPal, BG_PALETTE_SUB, playBgPalLen);
@@ -185,8 +192,14 @@ void PlayerView::Initialize()
 
     _playing = false;
 
-    _legendLine1Len = RenderTextLine("L/Y:PREC R/X:SUIV", _legendLine1TileAddr, MAX_LEGEND_CHARS);
-    _legendLine2Len = RenderTextLine("B:QUIT  SE:ALEA  ST:BCL", _legendLine2TileAddr, MAX_LEGEND_CHARS);
+    _legendLine1Len = _legendLine2Len = 0;
+    consoleInit(NULL, 2, BgType_Text4bpp, BgSize_T_256x256, 2, 1, false, true);
+    consoleClear();
+    // Font setup replaces palette entries also used by the background art.
+    dmaCopyWords(3, playBgPal, BG_PALETTE_SUB, playBgPalLen);
+    BG_PALETTE_SUB[7 * 16 + 15] = RGB15(31, 31, 31);
+    iprintf("\x1b[37m");
+    REG_BG2CNT_SUB &= ~BG_PRIORITY_3;
 
     _msgVramCheckpoint = _subObj.GetState();
     _msgLine1Len = 0;
@@ -225,7 +238,8 @@ void PlayerView::Update()
 {
     _subOam.Clear();
 
-    int msgOamCount = _msgVisible ? (_legendLine1Len + _legendLine2Len + _msgLine1Len + _msgLine2Len) : 0;
+    int msgOamCount = 0;
+    DrawDetails();
     int totalOams = 14 + msgOamCount;
     SpriteEntry* oams = _subOam.AllocOams(totalOams);
     memcpy(&oams[0], _curTimeOams, sizeof(_curTimeOams));
@@ -244,27 +258,79 @@ void PlayerView::Update()
     oams[10].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_SQUARE | (146 + 4);
     oams[10].attribute[1] = ATTR1_SIZE_16 | (116 + 4);
     oams[10].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(2) | (_playing ? _pauseIconObjAddr : _playIconObjAddr);
-
-    if (_msgVisible)
-    {
-        int idx = 14;
-        idx += PlaceTextLine(&oams[idx], _legendLine1TileAddr, _legendLine1Len, 4, 2, 1);
-        idx += PlaceTextLine(&oams[idx], _legendLine2TileAddr, _legendLine2Len, 4, 19, 1);
-        idx += PlaceTextLine(&oams[idx], _msgLine1TileAddr, _msgLine1Len, 4, 44, 1);
-        idx += PlaceTextLine(&oams[idx], _msgLine2TileAddr, _msgLine2Len, 4, 61, 1);
-
-        if (_curTime >= _msgHideAtTime)
-            _msgVisible = false;
-    }
 }
 
 void PlayerView::SetMessage(const char* line1, const char* line2)
 {
-    _subObj.SetState(_msgVramCheckpoint);
-    _msgLine1Len = RenderTextLine(line1, _msgLine1TileAddr, MAX_MSG_CHARS);
-    _msgLine2Len = line2 ? RenderTextLine(line2, _msgLine2TileAddr, MAX_MSG_CHARS) : 0;
+    snprintf(_notice1, sizeof(_notice1), "%s", line1 ? line1 : "");
+    snprintf(_notice2, sizeof(_notice2), "%s", line2 ? line2 : "");
     _msgVisible = true;
-    _msgHideAtTime = _curTime + 3;
+    _msgHideAtTime = GetDebounceTicks() + 32728u * 3;
+}
+
+void PlayerView::SetDetails(const char *title, const char *state, const char *caption,
+                            const char *diagnostics)
+{
+    snprintf(_title, sizeof(_title), "%s", title ? title : "");
+    snprintf(_state, sizeof(_state), "%s", state ? state : "");
+    snprintf(_caption, sizeof(_caption), "%s", caption ? caption : "");
+    snprintf(_diagnostics, sizeof(_diagnostics), "%s", diagnostics ? diagnostics : "");
+    DrawDetails();
+}
+
+void PlayerView::DrawDetails()
+{
+    using Preferences::Text;
+    char lines[12][33] = {};
+    char title[256];
+    MediaText::DisplayText(_title, strlen(_title), title, sizeof(title));
+    size_t length = strlen(title), offset = 0;
+    if (length > 32)
+        offset = (GetDebounceTicks() / 8192) % (length + 4);
+    for (unsigned i = 0; i < 32 && i < length; ++i)
+    {
+        size_t at = (offset + i) % (length + 4);
+        lines[0][i] = at < length ? title[at] : ' ';
+    }
+    snprintf(lines[2], 33, "%s",
+             (_playing ? Text("A: pause B: videos L/R: skip", "A: pause B: videos L/R: saut")
+                       : Text("A: play  B: videos L/R: skip", "A: jouer B: videos L/R: saut")));
+    snprintf(lines[3], 33, "%s", Text("START+SELECT: options", "START+SELECT: options"));
+    snprintf(lines[4], 33, "%.32s", _state);
+    if (_msgVisible && (int32_t)(GetDebounceTicks() - _msgHideAtTime) >= 0)
+        _msgVisible = false;
+    if (_msgVisible)
+    {
+        snprintf(lines[6], 33, "%s", _notice1);
+        snprintf(lines[7], 33, "%s", _notice2);
+    }
+    else
+    {
+        size_t used = 0, total = strlen(_caption);
+        for (int row = 6; row < 10 && used < total; ++row)
+        {
+            size_t count = total - used;
+            if (count > 32)
+            {
+                count = 32;
+                while (count > 0 && _caption[used + count] != ' ')
+                    --count;
+                if (!count)
+                    count = 32;
+            }
+            memcpy(lines[row], _caption + used, count);
+            used += count;
+            while (used < total && _caption[used] == ' ')
+                ++used;
+        }
+    }
+    snprintf(lines[11], 33, "%.32s", _diagnostics);
+    for (int row = 0; row < 12; ++row)
+        if (strcmp(lines[row], _lastLines[row]))
+        {
+            iprintf("\x1b[%d;0H%-32s", row, lines[row]);
+            strcpy(_lastLines[row], lines[row]);
+        }
 }
 
 void PlayerView::VBlank()

@@ -1,6 +1,24 @@
 #include <nds.h>
 #include <cassert>
+#include "../arm9/source/Preferences.h"
+#include "../arm9/source/Storage.h"
 #include "../arm9/source/gui/PlayerController.h"
+
+namespace Storage
+{
+const char *Drive()
+{
+    return "sd:";
+}
+char *ReadText(const char *, size_t, int *)
+{
+    return nullptr;
+}
+bool WriteState(const char *, const char *)
+{
+    return true;
+}
+} // namespace Storage
 
 u16 testKeys, REG_MASTER_BRIGHT_SUB, REG_DIVCNT;
 touchPosition testTouch = { 120, 150 };
@@ -36,6 +54,7 @@ static PlayerController::NavAction input(PlayerController& controller, u16 keys)
 
 int main()
 {
+    Preferences::Defaults("sd:");
     fv_header_t header{};
     header.width = 256; header.height = 144;
     header.fpsNum = 30; header.fpsDen = 1;
@@ -92,6 +111,26 @@ int main()
     input(controller, KEY_LID);
     input(controller, 0);
     assert(!player.isPlaying && pauses == 3 && resumes == 2);
+
+    // Seeking while paused stays paused; dragging previews before committing.
+    int before = seeks;
+    controller.SeekFrame(900);
+    assert(seeks > before && !player.isPlaying);
+    input(controller, 0);
+    testTouch = {120, 118};
+    before = seeks;
+    input(controller, KEY_TOUCH);
+    assert(seeks == before);
+    input(controller, 0);
+    assert(seeks > before && !player.isPlaying);
+    assert(input(controller, KEY_START) == C::NAV_ACTION_NONE);
+    assert(input(controller, KEY_SELECT | KEY_START) == C::NAV_ACTION_OPTIONS);
+    assert(input(controller, 0) == C::NAV_ACTION_NONE);
+    assert(input(controller, KEY_SELECT) == C::NAV_ACTION_NONE);
+    assert(input(controller, KEY_SELECT | KEY_START) == C::NAV_ACTION_OPTIONS);
+    assert(input(controller, 0) == C::NAV_ACTION_NONE);
+    assert(input(controller, KEY_START) == C::NAV_ACTION_NONE);
+    assert(input(controller, 0) == C::NAV_ACTION_TOGGLE_LOOP);
 
     // Closing at EOF suppresses automatic next/repeat until an explicit resume.
     input(controller, KEY_A);
