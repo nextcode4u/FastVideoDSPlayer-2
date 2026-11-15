@@ -169,7 +169,7 @@ static bool OpenPlaylist(const char *path)
 }
 
 static void AddToHistory(const char* path) {
-    strncpy(sHistory[sHistoryIdx], path, FV_MAX_PATH_LEN - 1);
+    snprintf(sHistory[sHistoryIdx], FV_MAX_PATH_LEN, "%s", path);
     sHistory[sHistoryIdx][FV_MAX_PATH_LEN - 1] = '\0';
     sHistoryIdx = (sHistoryIdx + 1) % HISTORY_SIZE;
     if (sHistoryCount < HISTORY_SIZE) sHistoryCount++;
@@ -387,7 +387,7 @@ static int BuildVideoIndex()
 
     int queueHead = 0;
     int queueTail = 0;
-    strncpy(sDirStack[queueTail], Preferences::videoRoot, FV_MAX_PATH_LEN - 1);
+    snprintf(sDirStack[queueTail], FV_MAX_PATH_LEN, "%s", Preferences::videoRoot);
     queueTail++;
 
     while (queueHead < queueTail) {
@@ -631,7 +631,7 @@ static void GetParentDir(const char* path, char* out, size_t outMax)
     const char* slash = strrchr(path, '/');
     if (!slash)
     {
-        strncpy(out, path, outMax - 1);
+        snprintf(out, outMax, "%s", path);
         out[outMax - 1] = 0;
         return;
     }
@@ -709,7 +709,7 @@ static int RunBrowser(char* outPath, size_t outPathMax, char* outDir, size_t out
                     else
                         sQueueCount = 0;
                 }
-                strncpy(outDir, browser.GetCurDir(), outDirMax - 1);
+                snprintf(outDir, outDirMax, "%s", browser.GetCurDir());
                 outDir[outDirMax - 1] = 0;
                 consoleClear();
                 return 1;
@@ -775,7 +775,7 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
     while (sPlayerController && !shouldExit)
     {
         bool wasPlaying = sPlayerController->IsPlaying();
-        u32 previousFrame = sPlayer.curFrame;
+        int previousFrame = sPlayer.curFrame;
         PlayerController::NavAction action = sPlayerController->Update();
         if (!sPlayerController->IsPlaying() && (wasPlaying || previousFrame != sPlayer.curFrame))
             SaveCurrent();
