@@ -50,7 +50,12 @@ char *ReadText(const char *path, size_t capacity, int *error)
     if (error)
         *error = request.result;
     if (ok)
-        return (char *)request.data;
+    {
+        // The ARM7 has acknowledged the completed read. Text is now ARM9-only,
+        // so retain its actual length instead of the maximum subtitle allowance.
+        void *compact = realloc(request.data, request.length + 1);
+        return (char *)(compact ? compact : request.data);
+    }
     free(request.data);
     return 0;
 }

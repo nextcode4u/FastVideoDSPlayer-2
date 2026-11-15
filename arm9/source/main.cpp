@@ -12,6 +12,12 @@
 #include "mpu.h"
 #include "gui/PlayerController.h"
 #include "gui/BrowserController.h"
+#include "gui/OptionsMenu.h"
+#include "Preferences.h"
+#include "LibraryState.h"
+#include "MediaText.h"
+#include "Storage.h"
+#include "LoaderReturn.h"
 #include "../../common/twlwram.h"
 
 static DTCM_BSS fv_player_t sPlayer;
@@ -40,6 +46,127 @@ extern bool gScreenSwapped;
 static char sHistory[HISTORY_SIZE][FV_MAX_PATH_LEN];
 static int sHistoryCount = 0;
 static int sHistoryIdx = 0;
+
+u32 GetDebounceTicks();
+static char *sSubtitleText;
+static MediaText::Cue sCues[2048];
+static size_t sCueCount;
+static char sQueue[256][FV_MAX_PATH_LEN];
+static int sQueueCount, sQueuePosition;
+static bool sReturnRequested;
+static bool sHistoryDirty;
+static u32 sOverlayTick;
+
+static void SaveCurrent()
+{
+    if (!sPlayerController)
+        return;
+    LibraryState::Remember(sCurPath, sPlayer.curFrame, sPlayer.fvHeader->nrFrames, sPlayer.videoEnded);
+    sHistoryDirty = true;
+}
+static void FlushHistory()
+{
+    if (sHistoryDirty)
+    {
+        if (!LibraryState::Save())
+            OptionsMenu::Notice(Preferences::Text("Could not save playback history. Check the SD card.",
+                                                  "Echec sauvegarde de l'historique. Verifiez la carte SD."));
+        else
+            sHistoryDirty = false;
+    }
+}
+static void ApplyPreferences()
+{
+    using namespace Preferences;
+    fv_setScaleMode(&sPlayer, (fv_scale_mode_t)values[Scale]);
+    fv_audioOptions(values[Volume], values[Mute], values[Mono], values[AudioDelay]);
+    gScreenSwapped = values[Screen] != 0;
+    if (gScreenSwapped)
+        lcdMainOnBottom();
+    else
+        lcdMainOnTop();
+}
+static void LoadSubtitles(const char *path)
+{
+    free(sSubtitleText);
+    sSubtitleText = 0;
+    sCueCount = 0;
+    char sidecar[256];
+    snprintf(sidecar, sizeof(sidecar), "%s", path);
+    char *extension = strrchr(sidecar, '.');
+    if (!extension || extension - sidecar > 250)
+        return;
+    strcpy(extension, ".srt");
+    sSubtitleText = Storage::ReadText(sidecar, FV_FILE_LIMIT);
+    if (sSubtitleText)
+    {
+        size_t skipped;
+        sCueCount = MediaText::Subtitles(sSubtitleText, sCues, 2048, skipped);
+    }
+}
+static void UpdateOverlay()
+{
+    if (!sPlayerController)
+        return;
+    u32 now = GetDebounceTicks();
+    if ((u32)(now - sOverlayTick) < 3272)
+        return;
+    sOverlayTick = now;
+    using namespace Preferences;
+    char state[64], caption[129] = {}, diagnostic[64] = {};
+    unsigned elapsed = (u64)sPlayer.curFrame * sPlayer.fvHeader->fpsDen / sPlayer.fvHeader->fpsNum;
+    unsigned total = (u64)sPlayer.fvHeader->nrFrames * sPlayer.fvHeader->fpsDen / sPlayer.fvHeader->fpsNum;
+    unsigned remaining = elapsed < total ? total - elapsed : 0;
+    snprintf(state, sizeof(state), Text("Vol %d%s  -%02u:%02u  %s", "Vol %d%s  -%02u:%02u  %s"),
+             values[Volume], values[Mute] ? " M" : "", remaining / 60, remaining % 60,
+             values[Repeat]    ? Text("Repeat", "Boucle")
+             : values[Shuffle] ? Text("Shuffle", "Aleat.")
+                               : "");
+    int64_t time = (u64)sPlayer.curFrame * sPlayer.fvHeader->fpsDen * 1000 / sPlayer.fvHeader->fpsNum;
+    time -= values[SubtitleDelay];
+    int cue = values[Subtitles] && time >= 0 ? MediaText::ActiveCue(sCues, sCueCount, (uint32_t)time) : -1;
+    if (cue >= 0)
+        MediaText::DisplayText(sSubtitleText + sCues[cue].text, sCues[cue].length, caption, sizeof(caption));
+    fv_audio_status_t audio = {};
+    fv_audioStatus(&audio);
+    if (values[Diagnostics])
+        snprintf(diagnostic, sizeof(diagnostic), "Late %d AV %+dms Q%lu U%lu", sPlayer.lateCount,
+                 sPlayer.syncErrorMs, (unsigned long)audio.queuedBlocks, (unsigned long)audio.underruns);
+    else if (audio.flags & FV_AUDIO_BUFFERING)
+        snprintf(diagnostic, sizeof(diagnostic), "%s", Text("Buffering...", "Chargement..."));
+    const char *name = strrchr(sCurPath, '/');
+    sPlayerController->SetDetails(name ? name + 1 : sCurPath, state, caption, diagnostic);
+}
+static bool PickRecent(char *out)
+{
+    const char *items[32];
+    for (int i = 0; i < LibraryState::recentCount; ++i)
+    {
+        const char *name = strrchr(LibraryState::recent[i].path, '/');
+        items[i] = name ? name + 1 : LibraryState::recent[i].path;
+    }
+    int selected = OptionsMenu::Choose(Preferences::Text("Recent videos", "Videos recentes"), items,
+                                       LibraryState::recentCount);
+    if (selected < 0)
+        return false;
+    strcpy(out, LibraryState::recent[selected].path);
+    return true;
+}
+static bool OpenPlaylist(const char *path)
+{
+    char *text = Storage::ReadText(path, 65536);
+    if (!text)
+        return false;
+    size_t skipped;
+    sQueueCount = MediaText::Playlist(text, path, sQueue, 256, skipped);
+    free(text);
+    sQueuePosition = 0;
+    if (skipped)
+        OptionsMenu::Notice(Preferences::Text(
+            "Some playlist entries were invalid, unsupported or beyond the 256-title limit.",
+            "Certaines entrees sont invalides ou depassent la limite de 256 videos."));
+    return sQueueCount != 0;
+}
 
 static void AddToHistory(const char* path) {
     strncpy(sHistory[sHistoryIdx], path, FV_MAX_PATH_LEN - 1);
@@ -95,7 +222,8 @@ static void ShowVideoMessage()
     else if (sRandomMode == 1) randomStateStr = "ON ";
     else randomStateStr = "OFF";
 
-    snprintf(line2, sizeof(line2), "ALEA:%s  BOUCLE:%s", randomStateStr, sLoopEnabled ? "ON" : "OFF");
+    snprintf(line2, sizeof(line2), Preferences::Text("Shuffle:%s Loop:%s", "Aleat:%s Boucle:%s"),
+             randomStateStr, sLoopEnabled ? "ON" : "OFF");
     sPlayerController->ShowMessage(displayName, line2);
 }
 
@@ -106,9 +234,12 @@ static bool loadAndStartVideo(const char* path)
     if (sPlayerController)
     {
         fv_pausePlayer(&sPlayer);
+        SaveCurrent();
+        FlushHistory();
         delete sPlayerController;
         sPlayerController = NULL;
         fv_destroyPlayer(&sPlayer);
+        Preferences::EndVideo();
     }
 
     // Copie systématique dans un buffer STATIC avant fv_initPlayer : le
@@ -129,6 +260,7 @@ static bool loadAndStartVideo(const char* path)
     if (!fv_initPlayer(&sPlayer, sLoadCandidate, sCanUseWram))
     {
         fv_destroyPlayer(&sPlayer);
+        Preferences::EndVideo();
         return false; // Échec du chargement
     }
 
@@ -136,14 +268,46 @@ static bool loadAndStartVideo(const char* path)
     sCurPath[sizeof(sCurPath) - 1] = 0;
     AddToHistory(sCurPath);
 
+    LoadSubtitles(sCurPath);
+    LibraryState::Record *record = LibraryState::Find(sCurPath);
+    u32 resumeFrame = 0;
+    bool matchingRecord = record && record->frames == sPlayer.fvHeader->nrFrames;
+    Preferences::BeginVideo(record ? record->scale : 0, record ? record->audioDelay : 0,
+                            record ? record->subtitleDelay : 0, matchingRecord);
+    if (matchingRecord)
+    {
+        if (Preferences::values[Preferences::Resume] && record->frame && !sQueueCount)
+        {
+            const char *items[] = {Preferences::Text("Resume", "Reprendre"),
+                                   Preferences::Text("Start over", "Depuis le debut"),
+                                   Preferences::Text("Bookmark", "Signet")};
+            int choice =
+                OptionsMenu::Choose(Preferences::Text("Continue watching?", "Continuer la video?"), items, 3);
+            if (choice == 0)
+                resumeFrame = record->frame;
+            if (choice == 2)
+                resumeFrame = record->bookmark;
+        }
+    }
+    ApplyPreferences();
+    if (resumeFrame)
+        fv_gotoNearestKeyFrame(&sPlayer, resumeFrame);
+    fv_startPlayer(&sPlayer);
     sPlayerController = new PlayerController(&sPlayer);
     sPlayerController->Initialize();
-    fv_startPlayer(&sPlayer);
+    sOverlayTick = GetDebounceTicks() - 3272;
+    UpdateOverlay();
     return true;
 }
 
 static void switchToAdjacentVideo(bool next)
 {
+    if (sQueueCount)
+    {
+        sQueuePosition = (sQueuePosition + (next ? 1 : sQueueCount - 1)) % sQueueCount;
+        loadAndStartVideo(sQueue[sQueuePosition]);
+        return;
+    }
     fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(next ? IPC_CMD_FIND_NEXT_FILE : IPC_CMD_FIND_PREV_FILE,
                                                (u32)sAdjacentPath));
     fv_waitReply(FIFO_USER_02);
@@ -212,24 +376,28 @@ static void RebuildShuffleBag()
     }
 }
 
-// Parcours BFS exhaustif de la carte (plus de plafond de dossiers ni de
-// profondeur : c'est un scan unique par session, pas un scan par pression
-// de touche comme avant, donc son coût ponctuel est acceptable). Remplit
-// sIndexBuf/sIndexOffset/sIndexCount. Retourne le nombre de dossiers dont
-// IPC_CMD_LIST_DIR a échoué (utilisé pour décider un retry côté appelant).
+// Index only the configured library, on demand. Directory pages are bounded;
+// the existing 600-title / 48 KiB index limits still apply. B cancels between
+// pages so whole-card traversal is never required just to browse a folder.
 static int BuildVideoIndex()
 {
     sIndexCount = 0;
     sIndexBufUsed = 0;
     int failedDirs = 0;
-    int truncatedDirs = 0;
 
     int queueHead = 0;
     int queueTail = 0;
-    strncpy(sDirStack[queueTail], isDSiMode() ? "sd:/" : "fat:/", FV_MAX_PATH_LEN - 1);
+    strncpy(sDirStack[queueTail], Preferences::videoRoot, FV_MAX_PATH_LEN - 1);
     queueTail++;
 
     while (queueHead < queueTail) {
+        scanKeys();
+        if (keysDown() & KEY_B)
+        {
+            sIndexCount = 0;
+            sIndexBufUsed = 0;
+            return -1;
+        }
         char currentDir[FV_MAX_PATH_LEN];
         strncpy(currentDir, sDirStack[queueHead], FV_MAX_PATH_LEN - 1);
         currentDir[FV_MAX_PATH_LEN - 1] = '\0';
@@ -239,71 +407,102 @@ static int BuildVideoIndex()
         sListReq.path[FV_MAX_PATH_LEN - 1] = '\0';
         sListReq.entries = sListEntries;
         sListReq.maxEntries = 256;
+        sListReq.direction = 0;
+        do
+        {
 
-        DC_FlushRange(&sListReq, sizeof(sListReq));
-        DC_FlushRange(sListEntries, sizeof(sListEntries));
+            DC_FlushRange(&sListReq, sizeof(sListReq));
+            DC_FlushRange(sListEntries, sizeof(sListEntries));
 
-        fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_LIST_DIR, (u32)&sListReq));
+            fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_LIST_DIR, (u32)&sListReq));
 
-        // Attente bloquante : le protocole IPC_CMD_LIST_DIR n'autorise
-        // qu'une seule requête en vol à la fois (sListReq/sListEntries sont
-        // des buffers partagés, la réponse ne porte aucun identifiant de
-        // requête). Un timeout qui abandonnerait puis enverrait la requête
-        // suivante désynchroniserait durablement le protocole : la réponse
-        // tardive de l'ARM7 à la requête abandonnée serait alors lue comme
-        // la réponse d'une requête ultérieure, avec des données de mauvais
-        // dossier dans sListEntries -> crash quasi garanti en aval.
-        while (!fifoCheckValue32(FIFO_USER_02)) {
-            swiWaitForVBlank();
-        }
+            // Attente bloquante : le protocole IPC_CMD_LIST_DIR n'autorise
+            // qu'une seule requête en vol à la fois (sListReq/sListEntries sont
+            // des buffers partagés, la réponse ne porte aucun identifiant de
+            // requête). Un timeout qui abandonnerait puis enverrait la requête
+            // suivante désynchroniserait durablement le protocole : la réponse
+            // tardive de l'ARM7 à la requête abandonnée serait alors lue comme
+            // la réponse d'une requête ultérieure, avec des données de mauvais
+            // dossier dans sListEntries -> crash quasi garanti en aval.
+            fv_waitReply(FIFO_USER_02);
 
-        u32 ok = fifoGetValue32(FIFO_USER_02) & IPC_CMD_ARG_MASK;
+            u32 ok = fifoGetValue32(FIFO_USER_02) & IPC_CMD_ARG_MASK;
 
-        DC_InvalidateRange(&sListReq, sizeof(sListReq));
-        DC_InvalidateRange(sListEntries, sizeof(sListEntries));
+            DC_InvalidateRange(&sListReq, sizeof(sListReq));
+            DC_InvalidateRange(sListEntries, sizeof(sListEntries));
 
-        if (!ok) { failedDirs++; continue; }
-        if (sListReq.total > sListReq.count) truncatedDirs++;
+            if (!ok)
+            {
+                failedDirs++;
+                break;
+            }
 
-        for (u32 i = 0; i < sListReq.count; i++) {
-            const char* dName = sListEntries[i].name;
+            for (u32 i = 0; i < sListReq.count; i++)
+            {
+                const char *dName = sListEntries[i].name;
 
-            if (dName[0] == '.') continue;
-            if (strcasecmp(dName, "System Volume Information") == 0) continue;
-            if (strcasecmp(dName, "_nds") == 0) continue;
-            if (strcasecmp(dName, "Nintendo 3DS") == 0) continue;
-            if (strcasecmp(dName, "Nintendo DSi") == 0) continue;
-            if (strcasecmp(dName, "TWiLightMenu") == 0) continue;
-            if (strcasecmp(dName, "luma") == 0) continue;
-            if (strcasecmp(dName, "DCIM") == 0) continue;
+                if (dName[0] == '.')
+                    continue;
+                if (strcasecmp(dName, "System Volume Information") == 0)
+                    continue;
+                if (strcasecmp(dName, "_nds") == 0)
+                    continue;
+                if (strcasecmp(dName, "Nintendo 3DS") == 0)
+                    continue;
+                if (strcasecmp(dName, "Nintendo DSi") == 0)
+                    continue;
+                if (strcasecmp(dName, "TWiLightMenu") == 0)
+                    continue;
+                if (strcasecmp(dName, "luma") == 0)
+                    continue;
+                if (strcasecmp(dName, "DCIM") == 0)
+                    continue;
 
-            char fullPath[FV_MAX_PATH_LEN];
-            int dirLen = strlen(currentDir);
-            int nameLen = strlen(dName);
+                char fullPath[FV_MAX_PATH_LEN];
+                int dirLen = strlen(currentDir);
+                int nameLen = strlen(dName);
 
-            if (dirLen + nameLen + 2 >= FV_MAX_PATH_LEN) continue;
+                if (dirLen + nameLen + 2 >= FV_MAX_PATH_LEN)
+                    continue;
 
-            strcpy(fullPath, currentDir);
-            if (dirLen > 0 && fullPath[dirLen - 1] != '/') strcat(fullPath, "/");
-            strcat(fullPath, dName);
+                strcpy(fullPath, currentDir);
+                if (dirLen > 0 && fullPath[dirLen - 1] != '/')
+                    strcat(fullPath, "/");
+                strcat(fullPath, dName);
 
-            if (sListEntries[i].isDir) {
-                if (queueTail < MAX_DIR_STACK) {
-                    strncpy(sDirStack[queueTail], fullPath, FV_MAX_PATH_LEN - 1);
-                    queueTail++;
-                }
-            } else if (nameLen > 3 && strcasecmp(dName + nameLen - 3, ".fv") == 0) {
-                size_t pathLen = strlen(fullPath);
-                if (sIndexCount < VIDEO_INDEX_MAX_ENTRIES &&
-                    sIndexBufUsed + pathLen + 1 <= VIDEO_INDEX_BUF_SIZE)
+                if (sListEntries[i].isDir)
                 {
-                    memcpy(sIndexBuf + sIndexBufUsed, fullPath, pathLen + 1);
-                    sIndexOffset[sIndexCount] = sIndexBufUsed;
-                    sIndexBufUsed += (u32)(pathLen + 1);
-                    sIndexCount++;
+                    if (queueTail < MAX_DIR_STACK)
+                    {
+                        strncpy(sDirStack[queueTail], fullPath, FV_MAX_PATH_LEN - 1);
+                        queueTail++;
+                    }
+                }
+                else if (nameLen > 3 && strcasecmp(dName + nameLen - 3, ".fv") == 0)
+                {
+                    size_t pathLen = strlen(fullPath);
+                    if (sIndexCount < VIDEO_INDEX_MAX_ENTRIES &&
+                        sIndexBufUsed + pathLen + 1 <= VIDEO_INDEX_BUF_SIZE)
+                    {
+                        memcpy(sIndexBuf + sIndexBufUsed, fullPath, pathLen + 1);
+                        sIndexOffset[sIndexCount] = sIndexBufUsed;
+                        sIndexBufUsed += (u32)(pathLen + 1);
+                        sIndexCount++;
+                    }
                 }
             }
-        }
+            if (!sListReq.more || !sListReq.count)
+                break;
+            sListReq.boundary = sListEntries[sListReq.count - 1];
+            sListReq.direction = 1;
+            scanKeys();
+            if (keysDown() & KEY_B)
+            {
+                sIndexCount = 0;
+                sIndexBufUsed = 0;
+                return -1;
+            }
+        } while (true);
     }
 
     return failedDirs;
@@ -344,7 +543,8 @@ static void switchToRandomVideoAll()
         REG_DISPCNT_SUB = MODE_0_2D | DISPLAY_BG2_ACTIVE;
 
         consoleClear();
-        printf("\n\n\n\n    Indexation de la carte SD...\n\n    Veuillez patienter...");
+        iprintf("%s", Preferences::Text("Indexing video folder...\nB: cancel",
+                                        "Indexation du dossier...\nB: annuler"));
         swiWaitForVBlank();
 
         int failedDirs = BuildVideoIndex();
@@ -352,9 +552,14 @@ static void switchToRandomVideoAll()
         // sans .fv") -> probable glitch I/O transitoire, on retente une fois.
         if (sIndexCount == 0 && failedDirs > 0) {
             for (int i = 0; i < 10; i++) swiWaitForVBlank();
-            BuildVideoIndex();
+            failedDirs = BuildVideoIndex();
         }
 
+        if (failedDirs < 0)
+        {
+            loadAndStartVideo(prevPath);
+            return;
+        }
         RebuildShuffleBag();
         // Construit une seule fois par lancement de l'app : un échec I/O
         // persistant ou une bibliothèque vide ne redéclenchera pas de
@@ -362,7 +567,7 @@ static void switchToRandomVideoAll()
         sIndexBuilt = true;
 
         consoleClear();
-        printf("\n\n\n\n    %lu videos indexees.", (unsigned long)sIndexCount);
+        iprintf(Preferences::Text("%lu videos indexed.", "%lu videos indexees."), (unsigned long)sIndexCount);
         swiWaitForVBlank();
         for (int i = 0; i < 30; i++) swiWaitForVBlank();
         consoleClear();
@@ -406,9 +611,18 @@ static void DestroyCurrentPlayer()
     if (sPlayerController)
     {
         fv_pausePlayer(&sPlayer);
+        SaveCurrent();
+        FlushHistory();
         delete sPlayerController;
         sPlayerController = NULL;
         fv_destroyPlayer(&sPlayer);
+        Preferences::EndVideo();
+        free(sSubtitleText);
+        sSubtitleText = 0;
+        sCueCount = 0;
+        if (!Preferences::Save())
+            OptionsMenu::Notice(
+                Preferences::Text("Could not save settings.", "Echec sauvegarde des options."));
     }
 }
 
@@ -452,7 +666,15 @@ static int RunBrowser(char* outPath, size_t outPathMax, char* outDir, size_t out
     PlayerController::RestoreSubScreen();
     BrowserController browser;
     if (!browser.OpenDir(sBrowserDir))
-        return 0;
+    {
+        snprintf(sBrowserDir, sizeof(sBrowserDir), "%s/", Storage::Drive());
+        if (!browser.OpenDir(sBrowserDir))
+        {
+            OptionsMenu::Notice(Preferences::Text("Video folder unavailable. Check the SD card.",
+                                                  "Dossier indisponible. Verifiez la carte SD."));
+            return 0;
+        }
+    }
 
     browser.SetModes(sLoopEnabled, sRandomMode > 0);
     if (selectName)
@@ -469,6 +691,24 @@ static int RunBrowser(char* outPath, size_t outPathMax, char* outDir, size_t out
 
             case BrowserController::ACT_PLAY:
                 browser.GetSelectedPath(outPath, outPathMax);
+                if (!*outPath)
+                    break;
+                {
+                    const char *ext = strrchr(outPath, '.');
+                    if (ext && (!strcasecmp(ext, ".m3u") || !strcasecmp(ext, ".m3u8")))
+                    {
+                        if (!OpenPlaylist(outPath))
+                        {
+                            OptionsMenu::Notice(Preferences::Text("No playable entries in playlist.",
+                                                                  "Liste sans video valide."));
+                            browser.OpenDir(sBrowserDir);
+                            break;
+                        }
+                        snprintf(outPath, outPathMax, "%s", sQueue[0]);
+                    }
+                    else
+                        sQueueCount = 0;
+                }
                 strncpy(outDir, browser.GetCurDir(), outDirMax - 1);
                 outDir[outDirMax - 1] = 0;
                 consoleClear();
@@ -479,6 +719,42 @@ static int RunBrowser(char* outPath, size_t outPathMax, char* outDir, size_t out
                 browser.OpenDir(tmp);
                 break;
 
+            case BrowserController::ACT_SETTINGS:
+            {
+                char current[256];
+                snprintf(current, sizeof(current), "%s", browser.GetCurDir());
+                OptionsMenu::Action menu = OptionsMenu::Show(false, current);
+                if (menu == OptionsMenu::Return)
+                {
+                    sReturnRequested = true;
+                    return 0;
+                }
+                if (menu == OptionsMenu::Recent && PickRecent(outPath))
+                {
+                    sQueueCount = 0;
+                    return 1;
+                }
+                sLoopEnabled = Preferences::values[Preferences::Repeat];
+                sRandomMode = Preferences::values[Preferences::Shuffle];
+                if (menu == OptionsMenu::SetRoot)
+                    sIndexBuilt = false;
+                if (menu == OptionsMenu::BrowseRoot)
+                    snprintf(current, sizeof(current), "%s/", Storage::Drive());
+                browser.OpenDir(current);
+                break;
+            }
+            case BrowserController::ACT_RECENTS:
+            {
+                char current[256];
+                snprintf(current, sizeof(current), "%s", browser.GetCurDir());
+                if (PickRecent(outPath))
+                {
+                    sQueueCount = 0;
+                    return 1;
+                }
+                browser.OpenDir(current);
+                break;
+            }
             case BrowserController::ACT_PARENT:
                 GetParentDir(browser.GetCurDir(), tmp, sizeof(tmp));
                 browser.OpenDir(tmp);
@@ -494,12 +770,24 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
 {
     bool shouldExit = false;
     bool backToBrowser = false;
+    bool readErrorShown = false;
 
     while (sPlayerController && !shouldExit)
     {
+        bool wasPlaying = sPlayerController->IsPlaying();
+        u32 previousFrame = sPlayer.curFrame;
         PlayerController::NavAction action = sPlayerController->Update();
+        if (!sPlayerController->IsPlaying() && (wasPlaying || previousFrame != sPlayer.curFrame))
+            SaveCurrent();
+        if (sHistoryDirty && !sPlayerController->IsPlaying() && !(keysCurrent() & KEY_LID))
+            FlushHistory();
+        UpdateOverlay();
         if (sPlayer.readError) {
-            sPlayerController->ShowMessage("Video read failed", "B: back to browser");
+            if (!readErrorShown)
+                sPlayerController->ShowMessage(
+                    Preferences::Text("Video read failed", "Lecture impossible"),
+                    Preferences::Text("B: back to browser", "B: liste des videos"));
+            readErrorShown = true;
             if (action != PlayerController::NAV_ACTION_EXIT) continue;
         }
         switch (action)
@@ -517,7 +805,22 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
                 break;
 
             case PlayerController::NAV_ACTION_VIDEO_ENDED:
-                if (sLoopEnabled) loadAndStartVideo(sCurPath);
+                if (Preferences::values[Preferences::EndAction] == 3)
+                {
+                    sReturnRequested = true;
+                    shouldExit = true;
+                    break;
+                }
+                if (Preferences::values[Preferences::EndAction] == 0 ||
+                    (sQueueCount && sQueuePosition == sQueueCount - 1 && !sLoopEnabled &&
+                     Preferences::values[Preferences::EndAction] != 2))
+                {
+                    shouldExit = true;
+                    backToBrowser = true;
+                    break;
+                }
+                if (sLoopEnabled || Preferences::values[Preferences::EndAction] == 2)
+                    loadAndStartVideo(sCurPath);
                 else if (sRandomMode == 2) switchToRandomVideoAll();
                 else if (sRandomMode == 1) switchToRandomVideo();
                 else switchToAdjacentVideo(true);
@@ -525,6 +828,7 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
 
             case PlayerController::NAV_ACTION_TOGGLE_LOOP:
                 sLoopEnabled = !sLoopEnabled;
+                Preferences::values[Preferences::Repeat] = sLoopEnabled;
                 ShowVideoMessage();
                 break;
 
@@ -538,6 +842,7 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
                     sRandomMode++;
                     if (sRandomMode > 2) sRandomMode = 0;
                 }
+                Preferences::values[Preferences::Shuffle] = sRandomMode;
                 ShowVideoMessage();
                 break;
 
@@ -545,6 +850,82 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
                 ShowVideoMessage();
                 break;
 
+            case PlayerController::NAV_ACTION_OPTIONS:
+            {
+                bool wasPlaying = sPlayerController->IsPlaying();
+                sPlayerController->SetPaused(true);
+                SaveCurrent();
+                FlushHistory();
+                OptionsMenu::Action menu = OptionsMenu::Show(true);
+                char selection[256] = {};
+                if (menu == OptionsMenu::Bookmark)
+                {
+                    LibraryState::Record *record = LibraryState::Find(sCurPath);
+                    if (record)
+                    {
+                        record->bookmark = sPlayer.curFrame;
+                        sHistoryDirty = true;
+                        FlushHistory();
+                    }
+                }
+                if (menu == OptionsMenu::Recent)
+                    PickRecent(selection);
+                if (menu == OptionsMenu::Queue)
+                {
+                    const char *items[256];
+                    for (int i = 0; i < sQueueCount; ++i)
+                    {
+                        const char *name = strrchr(sQueue[i], '/');
+                        items[i] = name ? name + 1 : sQueue[i];
+                    }
+                    int chosen = OptionsMenu::Choose(Preferences::Text("Playlist queue", "Liste de lecture"),
+                                                     items, sQueueCount, sQueuePosition);
+                    if (chosen >= 0)
+                    {
+                        sQueuePosition = chosen;
+                        strcpy(selection, sQueue[chosen]);
+                    }
+                }
+                if (menu == OptionsMenu::Return)
+                {
+                    sReturnRequested = true;
+                    shouldExit = true;
+                    break;
+                }
+                if (menu == OptionsMenu::Back)
+                {
+                    shouldExit = true;
+                    backToBrowser = true;
+                    break;
+                }
+                if (*selection)
+                {
+                    if (menu == OptionsMenu::Recent)
+                        sQueueCount = 0;
+                    loadAndStartVideo(selection);
+                    break;
+                }
+                delete sPlayerController;
+                sPlayerController = new PlayerController(&sPlayer);
+                ApplyPreferences();
+                sPlayerController->Initialize();
+                sLoopEnabled = Preferences::values[Preferences::Repeat];
+                sRandomMode = Preferences::values[Preferences::Shuffle];
+                if (menu == OptionsMenu::Bookmark)
+                    sPlayerController->ShowMessage(Preferences::Text("Bookmark saved", "Signet enregistre"),
+                                                   "");
+                if (menu == OptionsMenu::GoBookmark)
+                {
+                    LibraryState::Record *record = LibraryState::Find(sCurPath);
+                    if (record)
+                        sPlayerController->SeekFrame(record->bookmark);
+                }
+                if (wasPlaying)
+                    sPlayerController->SetPaused(false);
+                sOverlayTick = GetDebounceTicks() - 3272;
+                UpdateOverlay();
+                break;
+            }
             case PlayerController::NAV_ACTION_EXIT:
                 shouldExit = true;
                 backToBrowser = canReturnToBrowser;
@@ -556,7 +937,7 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
     }
 
     DestroyCurrentPlayer();
-    return !backToBrowser;
+    return sReturnRequested || (shouldExit && !backToBrowser);
 }
 
 static void InitDebounceTimer()
@@ -569,7 +950,7 @@ static void InitDebounceTimer()
 
 u32 GetDebounceTicks()
 {
-    return ((u32)TIMER1_DATA << 16) | (u32)TIMER0_DATA;
+    return fv_ticks();
 }
 
 extern "C" int applicationMain(int argc, char** argv)
@@ -627,11 +1008,23 @@ extern "C" int applicationMain(int argc, char** argv)
     const char* filePath = NULL;
     if (argc >= 2)
         filePath = argv[1];
-    sStandalone = (filePath == NULL);
+    sStandalone = true; // B always opens the browser; Return to launcher is explicit.
+    Preferences::Load();
+    LibraryState::Load();
+    sLoopEnabled = Preferences::values[Preferences::Repeat];
+    sRandomMode = Preferences::values[Preferences::Shuffle];
 
-    strncpy(sBrowserDir, isDSiMode() ? "sd:/" : "fat:/", sizeof(sBrowserDir) - 1);
+    strncpy(sBrowserDir, Preferences::videoRoot, sizeof(sBrowserDir) - 1);
     sBrowserDir[sizeof(sBrowserDir) - 1] = 0;
 
+    if (filePath)
+    {
+        const char *ext = strrchr(filePath, '.');
+        if (ext && (!strcasecmp(ext, ".m3u") || !strcasecmp(ext, ".m3u8")))
+        {
+            filePath = OpenPlaylist(filePath) ? sQueue[0] : NULL;
+        }
+    }
     bool quit = false;
     while (!quit)
     {
@@ -639,8 +1032,10 @@ extern "C" int applicationMain(int argc, char** argv)
         {
             if (loadAndStartVideo(filePath))
                 quit = RunPlayerLoop(sStandalone);
-            else if (!sStandalone)
-                quit = true; 
+            else
+                OptionsMenu::Notice(
+                    Preferences::Text("Video could not be opened. Check the file and SD card.",
+                                      "Impossible de lire cette video. Verifiez fichier et SD."));
             filePath = NULL;
         }
         else
@@ -654,12 +1049,30 @@ extern "C" int applicationMain(int argc, char** argv)
                            sCurPath[0] ? GetFileName(sCurPath) : NULL))
                 filePath = sBrowserPick;
             else
-                quit = true;
+            {
+                if (LoaderReturn::Run())
+                    quit = true;
+                else
+                {
+                    sReturnRequested = false;
+                    quit = false;
+                }
+            }
+        }
+        if (sReturnRequested)
+        {
+            if (!LoaderReturn::Run())
+            {
+                sReturnRequested = false;
+                quit = false;
+            }
         }
     }
 
     DestroyCurrentPlayer();
     PlayerController::RestoreSubScreen();
-    
+
+    Preferences::Save();
+    free(sSubtitleText);
     exit(0);
 }
