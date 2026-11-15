@@ -1,21 +1,28 @@
 #include <nds.h>
 #include <stdio.h>
 #include <string.h>
+#include <initializer_list>
 #include "OptionsMenu.h"
 #include "BrowserView.h"
+#include "ControlSurface.h"
 #include "PlayerController.h"
 #include "../Preferences.h"
 #include "../MediaText.h"
+
 namespace OptionsMenu
 {
 using Preferences::Text;
+static const int PageCount = 4;
+static const int RowsPerPage = 8;
+
 static void Begin()
 {
     PlayerController::RestoreSubScreen();
     lcdMainOnTop();
     BrowserView view;
     view.Initialize();
-    scanKeys();
+    ControlSurface::Initialize();
+    scanKeys(); // Consume the button/touch that opened the panel.
 }
 static unsigned Keys()
 {
@@ -25,12 +32,44 @@ static unsigned Keys()
         return 0;
     return keysDown();
 }
-static void Row(int y, const char *text, bool selected)
+static void Frame(const char *title, int page, int pages)
 {
-    char visible[31];
+    consoleClear();
+    ControlSurface::Fill(0, 0, 32, 24, ControlSurface::Header);
+    ControlSurface::Fill(1, 4, 30, 16, ControlSurface::Panel);
+    ControlSurface::Fill(1, 21, 10, 3, ControlSurface::Button);
+    ControlSurface::Fill(12, 21, 9, 3, ControlSurface::Button);
+    ControlSurface::Fill(22, 21, 9, 3, ControlSurface::Button);
+    iprintf("\x1b[37m\x1b[1;2H%.23s\x1b[1;26H%d/%d", title, page + 1, pages);
+    iprintf("\x1b[22;2H%s\x1b[22;13H%s\x1b[22;23H%s",
+            Text("B: Back", "B: Retour"), Text("< L Prev", "< L Prec"), Text("R Next >", "R Suiv >"));
+}
+static void Row(int index, const char *text, bool selected)
+{
+    char visible[29];
     MediaText::DisplayText(text, strlen(text), visible, sizeof(visible));
-    iprintf("\x1b[%d;0H%s%c%-30s\x1b[37m", y, selected ? "\x1b[36;1m" : "\x1b[37m", selected ? '>' : ' ',
-            visible);
+    int y = 4 + index * 2;
+    if (selected)
+        ControlSurface::Fill(1, y, 30, 2, ControlSurface::Selected);
+    iprintf("\x1b[%d;1H%c%-28s", y, selected ? '>' : ' ', visible);
+}
+static int TouchRow(const touchPosition &touch)
+{
+    if (touch.px < 8 || touch.px >= 248 || touch.py < 32 || touch.py >= 160)
+        return -1;
+    return (touch.py - 32) / 16;
+}
+static unsigned FooterTouch(const touchPosition &touch)
+{
+    if (touch.py < 168 || touch.py >= 192)
+        return 0;
+    if (touch.px >= 8 && touch.px < 88)
+        return KEY_B;
+    if (touch.px >= 96 && touch.px < 168)
+        return KEY_L;
+    if (touch.px >= 176 && touch.px < 248)
+        return KEY_R;
+    return 0;
 }
 int Choose(const char *title, const char *const *items, int count, int selected)
 {
@@ -44,18 +83,27 @@ int Choose(const char *title, const char *const *items, int count, int selected)
     {
         if (dirty)
         {
-            consoleClear();
-            Row(0, title, false);
-            int start = (selected / 9) * 9;
-            for (int i = start; i < count && i < start + 9; ++i)
-                Row(2 + (i - start) * 2, items[i], i == selected);
-            iprintf("\x1b[21;0H%d/%d\n%s", selected + 1, count,
-                    Text("A: select  B: back  L/R: page", "A: choisir B: retour L/R: page"));
+            Frame(title, selected / RowsPerPage, (count + RowsPerPage - 1) / RowsPerPage);
+            int start = (selected / RowsPerPage) * RowsPerPage;
+            for (int i = start; i < count && i < start + RowsPerPage; ++i)
+                Row(i - start, items[i], i == selected);
+            iprintf("\x1b[3;2H%d/%d  %s", selected + 1, count,
+                    Text("A: choose", "A: choisir"));
             dirty = false;
         }
         unsigned keys = Keys();
         int old = selected;
-        if (keys & KEY_B)
+        if (keys & KEY_TOUCH)
+        {
+            touchPosition touch;
+            touchRead(&touch);
+            keys |= FooterTouch(touch);
+            int row = TouchRow(touch);
+            int index = (selected / RowsPerPage) * RowsPerPage + row;
+            if (row >= 0 && index < count)
+                return index;
+        }
+        if (keys & (KEY_B | KEY_START))
             return -1;
         if (keys & KEY_A)
             return selected;
@@ -64,18 +112,9 @@ int Choose(const char *title, const char *const *items, int count, int selected)
         if (keys & KEY_DOWN)
             selected = (selected + 1) % count;
         if (keys & KEY_L)
-            selected = selected >= 9 ? selected - 9 : 0;
+            selected = selected >= RowsPerPage ? selected - RowsPerPage : 0;
         if (keys & KEY_R)
-            selected = selected + 9 < count ? selected + 9 : count - 1;
-        if (keys & KEY_TOUCH)
-        {
-            touchPosition touch;
-            touchRead(&touch);
-            int row = (touch.py / 8 - 2) / 2;
-            int index = (selected / 9) * 9 + row;
-            if (touch.py >= 16 && touch.py < 160 && row < 9 && index < count)
-                return index;
-        }
+            selected = selected + RowsPerPage < count ? selected + RowsPerPage : count - 1;
         if (old != selected)
             dirty = true;
     }
@@ -83,120 +122,151 @@ int Choose(const char *title, const char *const *items, int count, int selected)
 void Notice(const char *message)
 {
     Begin();
-    consoleClear();
+    ControlSurface::Fill(0, 0, 32, 24, ControlSurface::Header);
     iprintf("%.240s\n\n%s", message, Text("A / B: continue", "A / B: continuer"));
-    while (!(Keys() & (KEY_A | KEY_B)))
+    while (!(Keys() & (KEY_A | KEY_B | KEY_START)))
     {
     }
+}
+
+struct Entry
+{
+    bool setting;
+    int value;
+};
+static int Entries(int page, bool playing, Entry *out)
+{
+    using namespace Preferences;
+    int count = 0;
+    auto action = [&](Action value) { out[count++] = {false, value}; };
+    auto setting = [&](Key value) { out[count++] = {true, value}; };
+    if (page == 0)
+    {
+        if (playing) action(Continue);
+        action(Back);
+        action(Return);
+        for (Key key : {Repeat, Shuffle, Seek, EndAction, Resume}) setting(key);
+    }
+    else if (page == 1)
+        for (Key key : {Scale, Screen, Dim, Subtitles, SubtitleDelay, PerVideo}) setting(key);
+    else if (page == 2)
+        for (Key key : {Volume, Mute, Mono, AudioDelay}) setting(key);
+    else
+    {
+        if (playing)
+        {
+            action(Bookmark);
+            action(GoBookmark);
+            action(Queue);
+        }
+        action(Recent);
+        if (!playing)
+        {
+            action(SetRoot);
+            action(BrowseRoot);
+        }
+        setting(Language);
+        setting(Diagnostics);
+    }
+    return count;
+}
+static const char *ActionText(Action action)
+{
+    const char *en[] = {"Continue video", "Back to videos", "Return to launcher", "Save bookmark",
+                       "Go to bookmark", "Playlist queue", "Recent videos", "Use this as video folder",
+                       "Browse SD card"};
+    const char *fr[] = {"Continuer video", "Liste des videos", "Retour au lanceur", "Ajouter signet",
+                       "Aller au signet", "Liste de lecture", "Videos recentes", "Utiliser ce dossier video",
+                       "Parcourir la carte SD"};
+    return Text(en[action], fr[action]);
 }
 Action Show(bool playing, const char *currentDirectory)
 {
     Begin();
-    int selected = 0;
+    int page = 0, selected = 0;
     bool dirty = true, changed = false;
-    const int actions = playing ? 7 : 5, total = actions + Preferences::Count;
-    const char *en[] = {"Continue video", "Back to videos", "Return to launcher", "Save bookmark",
-                        "Go to bookmark", "Playlist queue", "Recent videos"};
-    const char *fr[] = {"Continuer video", "Liste des videos", "Retour au lanceur", "Ajouter signet",
-                        "Aller au signet", "Liste de lecture", "Videos recentes"};
-    const char *browserEn[] = {"Back to videos", "Recent videos", "Use this as video folder",
-                               "Browse SD card", "Return to launcher"};
-    const char *browserFr[] = {"Liste des videos", "Videos recentes", "Utiliser ce dossier video",
-                               "Parcourir la carte SD", "Retour au lanceur"};
     for (;;)
     {
+        Entry entries[RowsPerPage];
+        int count = Entries(page, playing, entries);
         if (dirty)
         {
-            consoleClear();
-            Row(0, Text("Playback options", "Options de lecture"), false);
-            int start = (selected / 8) * 8;
-            for (int i = start; i < total && i < start + 8; ++i)
+            const char *en[] = {"Playback", "Picture", "Sound", "Library"};
+            const char *fr[] = {"Lecture", "Image", "Son", "Bibliotheque"};
+            Frame(Text(en[page], fr[page]), page, PageCount);
+            for (int i = 0; i < count; ++i)
             {
                 char row[80];
-                if (i < actions)
-                    snprintf(
-                        row, sizeof(row), "%s",
-                        playing ? (Preferences::values[Preferences::Language] ? fr[i] : en[i])
-                                : (Preferences::values[Preferences::Language] ? browserFr[i] : browserEn[i]));
-                else
+                if (entries[i].setting)
                 {
-                    int key = i - actions;
+                    auto key = (Preferences::Key)entries[i].value;
                     char value[24];
-                    Preferences::ValueText((Preferences::Key)key, value, sizeof(value));
+                    Preferences::ValueText(key, value, sizeof(value));
                     snprintf(row, sizeof(row), "%s: %s",
-                             Text(Preferences::options[key].english, Preferences::options[key].french),
-                             value);
+                             Text(Preferences::options[key].english, Preferences::options[key].french), value);
                 }
-                Row(2 + (i - start) * 2, row, i == selected);
+                else
+                    snprintf(row, sizeof(row), "%s", ActionText((Action)entries[i].value));
+                Row(i, row, i == selected);
             }
-            iprintf("\x1b[19;0H%s\n%s\n%s",
-                    Text("Left/Right: change  L/R: page", "Gauche/Droite: choix L/R: page"),
-                    Text("A: choose  B: save and back", "A: choisir B: sauver, retour"),
-                    changed ? Text("Unsaved changes", "Modifications non enregistrees") : "");
+            iprintf("\x1b[3;2H%s%s", entries[selected].setting
+                        ? Text("< > / A: change", "< > / A: changer") : Text("A: open", "A: ouvrir"),
+                    changed ? Text("  [edited]", "  [modifie]") : "");
             dirty = false;
         }
         unsigned keys = Keys();
-        int old = selected;
-        Action action = Continue;
-        bool done = false;
         if (keys & KEY_TOUCH)
         {
             touchPosition touch;
             touchRead(&touch);
-            if (touch.py >= 16 && touch.py < 144)
+            keys |= FooterTouch(touch);
+            int row = TouchRow(touch);
+            if (row >= 0 && row < count)
             {
-                int row = (selected / 8) * 8 + (touch.py / 8 - 2) / 2;
-                if (row < total)
+                if (row == selected)
+                    keys |= KEY_A;
+                else
                 {
-                    if (row == selected)
-                        keys |= KEY_A;
-                    else
-                        selected = row;
+                    selected = row;
+                    dirty = true;
                 }
             }
         }
-        if (keys & KEY_B)
+        Action result = Continue;
+        bool done = keys & (KEY_B | KEY_START);
+        if (!done && (keys & (KEY_L | KEY_R)))
         {
-            done = true;
-            action = Continue;
+            page = (page + ((keys & KEY_L) ? PageCount - 1 : 1)) % PageCount;
+            selected = 0;
+            dirty = true;
+            continue;
         }
-        if (keys & KEY_UP)
-            selected = selected ? selected - 1 : total - 1;
-        if (keys & KEY_DOWN)
-            selected = (selected + 1) % total;
-        if (keys & KEY_L)
-            selected = selected >= 8 ? selected - 8 : 0;
-        if (keys & KEY_R)
-            selected = selected + 8 < total ? selected + 8 : total - 1;
-        if (selected >= actions && (keys & (KEY_LEFT | KEY_RIGHT | KEY_A)))
+        if (!done && (keys & (KEY_UP | KEY_DOWN)))
         {
-            Preferences::Change((Preferences::Key)(selected - actions), (keys & KEY_LEFT) ? -1 : 1);
+            selected = (selected + ((keys & KEY_UP) ? count - 1 : 1)) % count;
+            dirty = true;
+        }
+        if (!done && entries[selected].setting && (keys & (KEY_LEFT | KEY_RIGHT | KEY_A)))
+        {
+            Preferences::Change((Preferences::Key)entries[selected].value, (keys & KEY_LEFT) ? -1 : 1);
             dirty = changed = true;
         }
-        else if (selected < actions && (keys & KEY_A))
+        else if (!done && !entries[selected].setting && (keys & KEY_A))
         {
+            result = (Action)entries[selected].value;
             done = true;
-            if (playing)
-                action = (Action)selected;
-            else
-            {
-                const Action map[] = {Back, Recent, SetRoot, BrowseRoot, Return};
-                action = map[selected];
-            }
-            if (action == SetRoot && currentDirectory)
+            if (result == SetRoot && currentDirectory)
             {
                 snprintf(Preferences::videoRoot, sizeof(Preferences::videoRoot), "%s", currentDirectory);
                 changed = true;
             }
         }
-        if (old != selected)
-            dirty = true;
         if (done)
         {
             if (changed && !Preferences::Save())
                 Notice(Text("Could not save settings. Check SD space / write protection.",
                             "Echec sauvegarde. Verifiez la carte SD."));
-            return action;
+            return result;
         }
     }
 }

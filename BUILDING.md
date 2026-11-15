@@ -43,7 +43,7 @@ The script builds six AddressSanitizer/UndefinedBehaviorSanitizer test programs:
 - display transforms for every supported height;
 - container, keyframe and record validation;
 - audio-ring rotation, timer rollover and synchronization corrections;
-- the actual controller with hardware substitutes (lid priority, chords and paused seeks);
+- the actual controller with hardware substitutes (lid priority, options/touch controls, screen shortcuts and paused seeks);
 - playlists, UTF-8/SRT handling, settings bounds, history and per-video defaults;
 - the actual FatFs state service and directory pager on a temporary FAT image,
   including an injected write failure and forward/backward pages across 140 files.

@@ -16,17 +16,21 @@ path as `argv[1]` from a compatible launcher. The default video folder is
 | Left / Right | Jump 5, 10 or 30 seconds, aligned to an encoded keyframe |
 | Touch timeline | Preview a destination while dragging; seek on release |
 | L / Y; R / X | Previous; next video |
-| START + SELECT | Options, bookmarks, recent videos and playlist queue |
-| START | Toggle repeat on release |
-| SELECT | Cycle shuffle on release |
+| START / Options touch button | Open options; START or B closes them |
+| Repeat touch button | Toggle repeat |
+| SELECT | Cycle shuffle |
 | Up + START | Swap video and controls screens |
 | Down + START | Toggle Fit / Stretch |
 | Close lid | Pause; reopening leaves playback paused until fresh input |
 
+The playback screen has separate Repeat, Play/Pause and Options touch controls.
+Options are grouped into Playback, Picture, Sound and Library pages. Use L/R or
+the on-screen page buttons; bookmarks, recent videos and the queue are in Library.
+
 In the browser, A opens, B goes up, L/R moves by a screenful, START opens options
 and SELECT opens recent videos. Options use Up/Down to select, Left/Right to
-change and L/R to change pages. B saves and goes back. Touch selects a row; tap
-the selected row again to activate it. English is the default; French remains
+change and L/R to change pages. B, START or the Back button saves and goes back.
+Touch selects a row; tap the selected row again to activate it. English is the default; French remains
 available in Language.
 
 **Fit** preserves the encoded 256-pixel-wide image and centres shorter images.
