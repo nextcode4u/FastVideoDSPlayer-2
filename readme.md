@@ -1,15 +1,34 @@
-# Playback enhancement branch
+# FastVideoDSPlayer 2 — v2.4
 
-This branch adds English/French options, saved preferences and playback history,
-Fit/Stretch, lid pause, playlists, subtitles, volume controls and audio-clock
-synchronization. See [controls and configuration](PLAYBACK.md) and
-[building and checks](BUILDING.md). These changes are separate from the small
-interrupt-wait compatibility fix and have not been released as a stable build.
+This nextcode4u fork builds on Gericom's original player and Mathos42's
+FastVideoDSPlayer 2 v2.3. It includes the ARM9 interrupt-wait compatibility fix,
+a compact playback interface, English/French options, saved preferences,
+Fit/Stretch, lid pause, resume/bookmarks, playlists, subtitles and audio-clock
+synchronization.
 
-The upstream v2.3 notes below are retained for credit and background. The linked
-playback guide describes this branch's current controls and limits. Original
-new contributions in this fork use [LICENSE.enhancements](LICENSE.enhancements);
-that notice does not relicense Gericom's or Mathos42's code.
+Download [v2.4](https://github.com/nextcode4u/FastVideoDSPlayer-2/releases/tag/v2.4)
+and replace your existing player executable with `FastVideoDS.nds`, keeping the
+path and filename your launcher expects. Launch it directly to browse, or pass
+an `.fv`, `.m3u` or `.m3u8` path through argv. The video format is unchanged.
+
+**START** or the **Options** touch button opens options. **A** pauses/resumes;
+**B** returns to the browser. Options are grouped into Playback, Picture, Sound
+and Library pages. The default video folder is `/media/videos`; preferences and
+history are saved under `/data/fastvideods`.
+
+See [controls and configuration](PLAYBACK.md) and [building and checks](BUILDING.md).
+Build, host tests and emulator checks pass. The playback guide records remaining
+physical DS/DSi checks, including long-duration A/V sync and slow-card recovery.
+
+Original additions in this fork use [LICENSE.enhancements](LICENSE.enhancements).
+That license does not relicense Gericom's or Mathos42's code. The inherited
+Roboto assets have a separate [font notice](LICENSE.roboto). Keep the release's
+license and source information with redistributed copies.
+
+## Upstream v2.3 reference
+
+The original notes below are retained for attribution and historical context.
+For v2.4 controls, settings and limits, use the playback guide linked above.
 
 FastVideoDSPlayer 2
 ===================
