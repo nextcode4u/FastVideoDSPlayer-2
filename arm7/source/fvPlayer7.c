@@ -1,4 +1,5 @@
 #include <nds.h>
+#include <nds/arm7/i2c.h>
 #include <string.h>
 #include <strings.h>
 #include <nds/fifocommon.h>
@@ -473,6 +474,14 @@ static bool findRandomFvFile(char *outPath)
 static void handleFindFile(u32 value)
 {
     switch (value >> IPC_CMD_CMD_SHIFT) {
+    case IPC_CMD_RETURN_LOADER:
+        stopAudio();
+        if (isDSiMode())
+        {
+            i2cWriteRegister(I2C_PM, I2CREGPM_RESETFLAG, 1);
+            i2cWriteRegister(I2C_PM, I2CREGPM_PWRCNT, 1);
+        }
+        break;
     case IPC_CMD_FILE_SERVICE:
     {
         fv_file_request_t *request = (fv_file_request_t *)(value & IPC_CMD_ARG_MASK);
