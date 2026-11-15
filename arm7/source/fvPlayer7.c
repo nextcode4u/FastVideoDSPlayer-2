@@ -10,6 +10,7 @@
 #include "../../common/twlwram.h"
 #include "fvPlayer7.h"
 #include "../../common/fvValidation.h"
+#include "../../common/fvAudioMath.h"
 
 #define FV_AUDIO_START_OFFSET 12
 #define FV_AUDIO_CH_LEFT 1
@@ -38,51 +39,117 @@ static inline int getAudioTimerValue(int rate)
     return (16756991 + ((rate + 1) >> 1)) / rate;
 }
 
+static void audioFrameIrq(void);
+
+#define PCM_SAMPLES (FV_AUDIO_RING_FRAMES * FV_AUDIO_FRAME_SAMPLES)
+#define PCM_TARGET (FV_AUDIO_START_OFFSET * FV_AUDIO_FRAME_SAMPLES)
+static volatile fv_audio_status_t *sAudioStatus;
+static u32 sAudioBase, sUnderruns;
+static volatile u32 sAudioFilled, sAudioBlocks;
+static volatile u16 sLastAudioBlocks;
+static bool sAudioPaused, sBuffering;
+static unsigned sVolume = 127;
+static bool sMute, sMono;
+static s16 sPcmLeft[FV_AUDIO_FRAME_SAMPLES], sPcmRight[FV_AUDIO_FRAME_SAMPLES];
+
+static u32 audioPosition(void)
+{
+    if (!sPlayer.audioStarted) return 0;
+    int irq = enterCriticalSection();
+    u16 blocks, partial;
+    do { blocks = TIMER_DATA(3); partial = TIMER_DATA(2) & 255; } while (blocks != TIMER_DATA(3));
+    sAudioBlocks += (u16)(blocks - sLastAudioBlocks);
+    sLastAudioBlocks = blocks;
+    u32 result = sAudioBlocks * FV_AUDIO_FRAME_SAMPLES + partial;
+    leaveCriticalSection(irq);
+    return result;
+}
+
 static void audioFrameIrq(void)
 {
+    // Silence a drained ring even if foreground SD I/O is still blocked.
+    u32 blocks = sAudioBlocks + (u16)(TIMER_DATA(3) - sLastAudioBlocks);
+    if (blocks * FV_AUDIO_FRAME_SAMPLES >= sAudioFilled) {
+        SCHANNEL_CR(FV_AUDIO_CH_LEFT) &= ~127u;
+        SCHANNEL_CR(FV_AUDIO_CH_RIGHT) &= ~127u;
+    }
+}
+
+static void publishAudio(void)
+{
+    if (!sAudioStatus) return;
+    u32 position = audioPosition();
+    if (position > sAudioFilled) position = sAudioFilled;
+    sAudioStatus->sequence++;
+    sAudioStatus->samples = sAudioBase + position;
+    sAudioStatus->bufferedSamples = sAudioFilled - position;
+    sAudioStatus->queuedBlocks = sPlayer.queueFrameCount;
+    sAudioStatus->underruns = sUnderruns;
+    sAudioStatus->flags = (sPlayer.audioStarted ? FV_AUDIO_RUNNING : 0) |
+        (sAudioPaused ? FV_AUDIO_PAUSED : 0) | (sBuffering ? FV_AUDIO_BUFFERING : 0);
+    sAudioStatus->sequence++;
+}
+
+static void stopChannels(void)
+{
+    TIMER_CR(0) = 0;
+    SCHANNEL_CR(FV_AUDIO_CH_LEFT) = 0;
+    SCHANNEL_CR(FV_AUDIO_CH_RIGHT) = 0;
+    irqDisable(IRQ_TIMER2);
+    TIMER_CR(1) = TIMER_CR(2) = TIMER_CR(3) = 0;
+}
+
+static void preserveAudio(void)
+{
+    if (!sPlayer.audioStarted) return;
+    // Stop the sample clock before taking its position. No SD work in here.
+    TIMER_CR(0) = 0;
+    u32 consumed = audioPosition();
+    stopChannels();
+    sPlayer.audioStarted = false;
+    if (consumed > sAudioFilled) consumed = sAudioFilled;
+    fv_rotateSamples(&sPlayer.audioRingL[0][0], PCM_SAMPLES, consumed % PCM_SAMPLES);
+    fv_rotateSamples(&sPlayer.audioRingR[0][0], PCM_SAMPLES, consumed % PCM_SAMPLES);
+    sAudioFilled -= consumed;
+    sAudioBase += consumed;
+    memset(&sPlayer.audioRingL[0][0] + sAudioFilled, 0, (PCM_SAMPLES - sAudioFilled) * sizeof(s16));
+    memset(&sPlayer.audioRingR[0][0] + sAudioFilled, 0, (PCM_SAMPLES - sAudioFilled) * sizeof(s16));
 }
 
 static void decodeAudioFrame(void)
 {
-    adpcm_decompress(sPlayer.audioQueueL[sPlayer.queueReadPtr], FV_AUDIO_FRAME_SIZE,
-                     sPlayer.audioRingL[sPlayer.ringPos]);
-    adpcm_decompress(sPlayer.audioQueueR[sPlayer.queueReadPtr], FV_AUDIO_FRAME_SIZE,
-                     sPlayer.audioRingR[sPlayer.ringPos]);
-    if (++sPlayer.ringPos == FV_AUDIO_RING_FRAMES)
-        sPlayer.ringPos = 0;
-    if (++sPlayer.queueReadPtr == FV_AUDIO_QUEUE_FRAMES)
-        sPlayer.queueReadPtr = 0;
-    sPlayer.queueFrameCount--;
-    sPlayer.audioFramesNeeded--;
-    sPlayer.audioFramesProvided++;
+    adpcm_decompress(sPlayer.audioQueueL[sPlayer.queueReadPtr], FV_AUDIO_FRAME_SIZE, sPcmLeft);
+    adpcm_decompress(sPlayer.audioQueueR[sPlayer.queueReadPtr], FV_AUDIO_FRAME_SIZE, sPcmRight);
+    unsigned volume = sMute ? 0 : sVolume;
+    for (unsigned i = 0; i < FV_AUDIO_FRAME_SAMPLES; ++i) {
+        int left = sPcmLeft[i], right = sPcmRight[i];
+        if (sMono) left = right = (left + right) / 2;
+        unsigned at = (sAudioFilled + i) % PCM_SAMPLES;
+        (&sPlayer.audioRingL[0][0])[at] = left * (int)volume / 127;
+        (&sPlayer.audioRingR[0][0])[at] = right * (int)volume / 127;
+    }
+    sAudioFilled += FV_AUDIO_FRAME_SAMPLES;
+    sPlayer.queueReadPtr = (sPlayer.queueReadPtr + 1) % FV_AUDIO_QUEUE_FRAMES;
+    --sPlayer.queueFrameCount;
 }
 
 static void startAudio(void)
 {
-    if (sPlayer.audioStarted)
-        return;
-    sPlayer.ringPos = 0;
-    sPlayer.audioFramesNeeded = 0;
-    sPlayer.audioFramesProvided = 0;
-    for (int i = 0; i < FV_AUDIO_START_OFFSET; i++) {
-        if (sPlayer.queueFrameCount == 0)
-            break;
-        decodeAudioFrame();
-    }
-    sPlayer.audioFramesProvided -= FV_AUDIO_START_OFFSET;
+    if (sPlayer.audioStarted || sAudioPaused) return;
+    while (sAudioFilled < PCM_TARGET && sPlayer.queueFrameCount) decodeAudioFrame();
+    if (!sAudioFilled) { sBuffering = true; publishAudio(); return; }
+    sAudioBlocks = 0;
+    sLastAudioBlocks = 0;
     int tmr = getAudioTimerValue(FV_AUDIO_RATE);
     SCHANNEL_SOURCE(FV_AUDIO_CH_LEFT) = (u32)sPlayer.audioRingL;
     SCHANNEL_REPEAT_POINT(FV_AUDIO_CH_LEFT) = 0;
-    SCHANNEL_LENGTH(FV_AUDIO_CH_LEFT) = sizeof(sPlayer.audioRingL) >> 2;
+    SCHANNEL_LENGTH(FV_AUDIO_CH_LEFT) = (PCM_SAMPLES * sizeof(s16)) >> 2;
     SCHANNEL_TIMER(FV_AUDIO_CH_LEFT) = -tmr;
     SCHANNEL_SOURCE(FV_AUDIO_CH_RIGHT) = (u32)sPlayer.audioRingR;
     SCHANNEL_REPEAT_POINT(FV_AUDIO_CH_RIGHT) = 0;
-    SCHANNEL_LENGTH(FV_AUDIO_CH_RIGHT) = sizeof(sPlayer.audioRingR) >> 2;
+    SCHANNEL_LENGTH(FV_AUDIO_CH_RIGHT) = (PCM_SAMPLES * sizeof(s16)) >> 2;
     SCHANNEL_TIMER(FV_AUDIO_CH_RIGHT) = -tmr;
-    TIMER_CR(0) = 0;
-    TIMER_CR(1) = 0;
-    TIMER_CR(2) = 0;
-    TIMER_CR(3) = 0;
+    TIMER_CR(0) = TIMER_CR(1) = TIMER_CR(2) = TIMER_CR(3) = 0;
     TIMER_DATA(0) = -2;
     TIMER_DATA(1) = -tmr;
     TIMER_DATA(2) = -256;
@@ -92,41 +159,47 @@ static void startAudio(void)
     TIMER_CR(1) = TIMER_CASCADE | TIMER_ENABLE;
     irqSet(IRQ_TIMER2, audioFrameIrq);
     irqEnable(IRQ_TIMER2);
-    SCHANNEL_CR(FV_AUDIO_CH_LEFT) = SCHANNEL_ENABLE | SOUND_VOL(0x7F) | SOUND_PAN(0) | SOUND_FORMAT_16BIT | SOUND_REPEAT;
-    SCHANNEL_CR(FV_AUDIO_CH_RIGHT) = SCHANNEL_ENABLE | SOUND_VOL(0x7F) | SOUND_PAN(0x7F) | SOUND_FORMAT_16BIT | SOUND_REPEAT;
+    SCHANNEL_CR(FV_AUDIO_CH_LEFT) = SCHANNEL_ENABLE | SOUND_VOL(127) | SOUND_PAN(0) | SOUND_FORMAT_16BIT | SOUND_REPEAT;
+    SCHANNEL_CR(FV_AUDIO_CH_RIGHT) = SCHANNEL_ENABLE | SOUND_VOL(127) | SOUND_PAN(127) | SOUND_FORMAT_16BIT | SOUND_REPEAT;
     TIMER_CR(0) = TIMER_ENABLE;
     sPlayer.audioStarted = true;
+    sBuffering = false;
+    publishAudio();
 }
 
 static void stopAudio(void)
 {
-    if (!sPlayer.audioStarted)
-        return;
+    stopChannels();
     sPlayer.audioStarted = false;
-    TIMER_CR(0) = 0;
-    irqDisable(IRQ_TIMER2);
-    SCHANNEL_CR(FV_AUDIO_CH_LEFT) = 0;
-    SCHANNEL_CR(FV_AUDIO_CH_RIGHT) = 0;
-    TIMER_CR(1) = 0;
-    TIMER_CR(2) = 0;
-    TIMER_CR(3) = 0;
-    sPlayer.ringPos = 0;
-    memset(&sPlayer.audioRingL[0][0], 0, sizeof(sPlayer.audioRingL));
-    memset(&sPlayer.audioRingR[0][0], 0, sizeof(sPlayer.audioRingR));
+    sAudioBase = sAudioFilled = sAudioBlocks = 0;
+    sAudioPaused = sBuffering = false;
+    if (sPlayer.audioRingL) memset(sPlayer.audioRingL, 0, (PCM_SAMPLES * sizeof(s16)));
+    if (sPlayer.audioRingR) memset(sPlayer.audioRingR, 0, (PCM_SAMPLES * sizeof(s16)));
+    publishAudio();
 }
 
 static void updateAudio(void)
 {
-    if (!sPlayer.audioStarted)
-        return;
-    int audioBlocks = TIMER_DATA(3);
-    int needed = audioBlocks - (sPlayer.audioFramesProvided & 0xFFFF);
-    if (needed < 0)
-        needed += 65536;
-    while (needed > 0 && sPlayer.queueFrameCount > 0) {
-        decodeAudioFrame();
-        needed--;
+    if (sPlayer.audioStarted) {
+        u32 position = audioPosition();
+        if (position > sAudioFilled) {
+            // Preserve only valid samples; never replay a stale ring on slow SD.
+            preserveAudio();
+            ++sUnderruns;
+            sBuffering = true;
+        } else {
+            while (sAudioFilled - position < PCM_TARGET && sPlayer.queueFrameCount) decodeAudioFrame();
+            // Clear the next block after the valid tail. It is always outside
+            // the queued region, so an unexpected stall produces silence.
+            unsigned tail = sAudioFilled % PCM_SAMPLES;
+            for (unsigned i = 0; i < FV_AUDIO_FRAME_SAMPLES; ++i) {
+                (&sPlayer.audioRingL[0][0])[(tail + i) % PCM_SAMPLES] = 0;
+                (&sPlayer.audioRingR[0][0])[(tail + i) % PCM_SAMPLES] = 0;
+            }
+        }
     }
+    if (sBuffering && !sAudioPaused && sPlayer.queueFrameCount >= 2) startAudio();
+    publishAudio();
 }
 
 static void gotoKeyFrameDirect(const fv_keyframe_t *keyFrameData)
@@ -140,8 +213,8 @@ static void gotoKeyFrameDirect(const fv_keyframe_t *keyFrameData)
     sPlayer.queueFrameCount = 0;
     sPlayer.audioFramesNeeded = 0;
     sPlayer.audioFramesProvided = 0;
-    memset(&sPlayer.audioQueueL[0][0], 0, sizeof(sPlayer.audioQueueL));
-    memset(&sPlayer.audioQueueR[0][0], 0, sizeof(sPlayer.audioQueueR));
+    memset(&sPlayer.audioQueueL[0][0], 0, FV_AUDIO_QUEUE_FRAMES * FV_AUDIO_FRAME_SIZE);
+    memset(&sPlayer.audioQueueR[0][0], 0, FV_AUDIO_QUEUE_FRAMES * FV_AUDIO_FRAME_SIZE);
 }
 
 static void readKeyFrame(u32 index, fv_keyframe_t *out)
@@ -561,12 +634,40 @@ frameReply:
             fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_KEYFRAME, sPlayer.fileError ? IPC_FRAME_ERROR : resultFrame));
             break;
         }
+        case IPC_CMD_AUDIO_BUFFERS: {
+            fv_audio_buffers_t *buffers = (fv_audio_buffers_t *)(value & IPC_CMD_ARG_MASK);
+            sPlayer.audioQueueL = buffers->queueLeft;
+            sPlayer.audioQueueR = buffers->queueRight;
+            sPlayer.audioRingL = buffers->ringLeft;
+            sPlayer.audioRingR = buffers->ringRight;
+            break;
+        }
+        case IPC_CMD_AUDIO_STATUS:
+            sAudioStatus = (fv_audio_status_t *)(value & IPC_CMD_ARG_MASK);
+            publishAudio();
+            break;
+        case IPC_CMD_AUDIO_OPTIONS: {
+            u32 options = value & IPC_CMD_ARG_MASK;
+            sVolume = options & 127;
+            sMute = (options & 128) != 0;
+            sMono = (options & 256) != 0;
+            break;
+        }
         case IPC_CMD_CONTROL_AUDIO: {
             if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_START)
                 startAudio();
             else if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_STOP)
                 stopAudio();
-            else if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_STOP_CLEAR) {
+            else if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_PAUSE) {
+                preserveAudio();
+                sAudioPaused = true;
+                publishAudio();
+            } else if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_RESUME) {
+                sAudioPaused = false;
+                startAudio();
+            } else if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_ARM) {
+                sAudioPaused = false;
+            } else if ((value & IPC_CMD_ARG_MASK) == IPC_ARG_CONTROL_AUDIO_STOP_CLEAR) {
                 stopAudio();
                 sPlayer.ringPos = 0;
                 sPlayer.queueReadPtr = 0;
@@ -574,8 +675,8 @@ frameReply:
                 sPlayer.queueFrameCount = 0;
                 sPlayer.audioFramesNeeded = 0;
                 sPlayer.audioFramesProvided = 0;
-                memset(&sPlayer.audioQueueL[0][0], 0, sizeof(sPlayer.audioQueueL));
-                memset(&sPlayer.audioQueueR[0][0], 0, sizeof(sPlayer.audioQueueR));
+                memset(&sPlayer.audioQueueL[0][0], 0, FV_AUDIO_QUEUE_FRAMES * FV_AUDIO_FRAME_SIZE);
+                memset(&sPlayer.audioQueueR[0][0], 0, FV_AUDIO_QUEUE_FRAMES * FV_AUDIO_FRAME_SIZE);
             }
             break;
         }

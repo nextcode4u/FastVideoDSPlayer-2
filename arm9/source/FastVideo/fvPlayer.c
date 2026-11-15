@@ -5,6 +5,33 @@
 #include "fvMcData.h"
 #include "fvPlayer.h"
 #include "fvWait.h"
+#include "../../../common/fvAudioMath.h"
+
+static fv_audio_status_t sAudioStatus ALIGN(32);
+static fv_audio_buffers_t sAudioBuffers ALIGN(32);
+static bool sAudioBuffersAttached;
+static int sAudioDelayMs;
+
+void fv_audioOptions(unsigned volume, bool mute, bool mono, int delayMs)
+{
+    if (volume > 127) volume = 127;
+    sAudioDelayMs = delayMs < -500 ? -500 : delayMs > 500 ? 500 : delayMs;
+    fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_AUDIO_OPTIONS,
+        volume | (mute ? 128 : 0) | (mono ? 256 : 0)));
+}
+
+bool fv_audioStatus(fv_audio_status_t* out)
+{
+    for (int retry = 0; retry < 3; ++retry) {
+        DC_InvalidateRange(&sAudioStatus, sizeof(sAudioStatus));
+        u32 sequence = *(volatile u32*)&sAudioStatus.sequence;
+        if (sequence & 1) continue;
+        memcpy(out, &sAudioStatus, sizeof(*out));
+        DC_InvalidateRange(&sAudioStatus, sizeof(sAudioStatus));
+        if (sequence == *(volatile u32*)&sAudioStatus.sequence) return true;
+    }
+    return false;
+}
 
 static ITCM_CODE void requestDataBuffer(fv_player_t* player)
 {
@@ -260,6 +287,11 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram)
     vramSetBankB(VRAM_B_LCD);
     vramSetBankC(VRAM_C_LCD);
 
+    if (!sAudioBuffersAttached) {
+        DC_FlushRange(&sAudioBuffers, sizeof(sAudioBuffers));
+        fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_AUDIO_BUFFERS, &sAudioBuffers));
+        sAudioBuffersAttached = true;
+    }
     // Publish the path before the other CPU reads it.
     DC_FlushRange(filePath, strlen(filePath) + 1);
     // open file
@@ -315,6 +347,8 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram)
     // leaveCriticalSection(irq);
 
     fifoSetValue32Handler(FIFO_USER_01, fifoHandler, player);
+    DC_InvalidateRange(&sAudioStatus, sizeof(sAudioStatus));
+    fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_AUDIO_STATUS, &sAudioStatus));
     setup3DEngine();
 
     player->lastKeyFrame = 0;
@@ -325,6 +359,7 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram)
 
 void fv_destroyPlayer(fv_player_t* player)
 {
+    fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_CONTROL_AUDIO, IPC_ARG_CONTROL_AUDIO_STOP_CLEAR));
     fifoSetValue32Handler(FIFO_USER_01, NULL, NULL);
     if (player->dataBufferIsHeap)
         free(player->dataBuffer);
@@ -375,6 +410,7 @@ ITCM_CODE void fv_startPlayer(fv_player_t* player)
     player->lateCount = 0;
     player->audioStarted = false;
     player->firstKeyFrame = true;
+    player->audioOriginFrame = player->curFrame;
 
     REG_DISPCNT = MODE_5_2D | DISPLAY_BG2_ACTIVE;
     REG_BG2CNT = (u16)BgSize_B16_256x256;
@@ -399,11 +435,6 @@ static void startAudio(void)
 static void stopAudio(void)
 {
     fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_CONTROL_AUDIO, IPC_ARG_CONTROL_AUDIO_STOP));
-}
-
-static void stopAudioClearQueue(void)
-{
-    fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_CONTROL_AUDIO, IPC_ARG_CONTROL_AUDIO_STOP_CLEAR));
 }
 
 ITCM_CODE void fv_updatePlayer(fv_player_t* player)
@@ -472,8 +503,20 @@ ITCM_CODE void fv_updatePlayer(fv_player_t* player)
         DC_FlushAll();
         // DC_FlushRange((u16*)((u32)VRAM_A + 0x20000 * player->stage2VramBlock), 256 * player->fvHeader->height * 2);
     }
-    if ((sVBlankCount == player->vblankPerFrame && (REG_VCOUNT >= 245 || REG_VCOUNT < 192)) ||
-        sVBlankCount > player->vblankPerFrame)
+    int waitFrames = player->vblankPerFrame;
+    fv_audio_status_t audio;
+    if (player->audioStarted && fv_audioStatus(&audio) && (audio.flags & FV_AUDIO_RUNNING)) {
+        int videoMs = (int)((u64)(player->curFrame + 1 - player->audioOriginFrame) *
+            player->fvHeader->fpsDen * 1000 / player->fvHeader->fpsNum);
+        int audioMs = (int)((u64)audio.samples * 352 * 1000 / 16756991);
+        player->syncErrorMs = videoMs - audioMs - sAudioDelayMs;
+        int intervalMs = (int)((u64)player->fvHeader->fpsDen * 1000 /
+            (player->fvHeader->fpsNum * player->vblankPerFrame));
+        waitFrames += fv_syncAdjustment(player->syncErrorMs, intervalMs);
+        if (waitFrames < 1) waitFrames = 1;
+    }
+    if ((sVBlankCount == waitFrames && (REG_VCOUNT >= 245 || REG_VCOUNT < 192)) ||
+        sVBlankCount > waitFrames)
     {
         player->lateCount++;
 
@@ -481,7 +524,7 @@ ITCM_CODE void fv_updatePlayer(fv_player_t* player)
     }
     else
     {
-        while (sVBlankCount < player->vblankPerFrame)
+        while (sVBlankCount < waitFrames)
         {
             // halt to save energy, if a vblank irq already happened this will return immediately
             swiIntrWait(0, IRQ_VBLANK);
@@ -537,19 +580,19 @@ ITCM_CODE void fv_updatePlayer(fv_player_t* player)
 void fv_pausePlayer(fv_player_t* player)
 {
     player->isPlaying = false;
+    fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_CONTROL_AUDIO, IPC_ARG_CONTROL_AUDIO_PAUSE));
     u32 waitStart = fv_ticks();
     while (player->isRequesting) fv_checkWait(waitStart);
-    stopAudioClearQueue();
-    player->audioStarted = false;
-    for (int i = 0; i < FV_PLAYER_DATA_BUFFER_COUNT; i++)
-        player->frameHasAudio[i] = false;
-    player->stage3HasAudio = false;
 }
 
 void fv_resumePlayer(fv_player_t* player)
 {
     sVBlankCount = 0;
     player->isPlaying = true;
+    if (player->audioStarted)
+        fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_CONTROL_AUDIO, IPC_ARG_CONTROL_AUDIO_RESUME));
+    else
+        fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_CONTROL_AUDIO, IPC_ARG_CONTROL_AUDIO_ARM));
 }
 
 void fv_gotoKeyFrame(fv_player_t* player, u32 keyFrame)

@@ -13,6 +13,22 @@
 // Frame replies distinguish normal EOF, backpressure and a failed read.
 #define IPC_FRAME_RETRY 0x0ffffffeu
 #define IPC_FRAME_ERROR 0x0fffffffu
+#define IPC_CMD_AUDIO_BUFFERS 14
+#define FV_AUDIO_QUEUE_FRAMES 64
+#define FV_AUDIO_RING_FRAMES 24
+typedef struct {
+    u8 queueLeft[FV_AUDIO_QUEUE_FRAMES][132], queueRight[FV_AUDIO_QUEUE_FRAMES][132];
+    s16 ringLeft[FV_AUDIO_RING_FRAMES][256], ringRight[FV_AUDIO_RING_FRAMES][256];
+} fv_audio_buffers_t;
+#define IPC_CMD_AUDIO_STATUS 11
+#define IPC_CMD_AUDIO_OPTIONS 12
+#define FV_AUDIO_RUNNING 1u
+#define FV_AUDIO_PAUSED 2u
+#define FV_AUDIO_BUFFERING 4u
+typedef struct {
+    u32 sequence, samples, bufferedSamples, queuedBlocks;
+    u32 underruns, flags, reserved[2];
+} fv_audio_status_t;
 #define IPC_CMD_SETUP_DLDI            13
 #define IPC_CMD_HANDSHAKE             15
 
@@ -49,3 +65,7 @@ typedef struct
 #define IPC_ARG_CONTROL_AUDIO_STOP       0
 #define IPC_ARG_CONTROL_AUDIO_START      1
 #define IPC_ARG_CONTROL_AUDIO_STOP_CLEAR 2
+
+#define IPC_ARG_CONTROL_AUDIO_PAUSE 3
+#define IPC_ARG_CONTROL_AUDIO_RESUME 4
+#define IPC_ARG_CONTROL_AUDIO_ARM 5

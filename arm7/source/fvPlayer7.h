@@ -5,8 +5,6 @@
 #include "fat/ff.h"
 #include "fpsAdjust.h"
 
-#define FV_AUDIO_QUEUE_FRAMES 64
-#define FV_AUDIO_RING_FRAMES 24
 #define MAX_SHUFFLE_FILES 1024 // ~2 Ko en RAM ARM7, suffisant pour la plupart des dossiers
 
 typedef struct
@@ -31,10 +29,10 @@ typedef struct
     int audioFramesProvided;
     int ringPos;
     
-    u8 audioQueueL[FV_AUDIO_QUEUE_FRAMES][FV_AUDIO_FRAME_SIZE] ALIGN(4);
-    u8 audioQueueR[FV_AUDIO_QUEUE_FRAMES][FV_AUDIO_FRAME_SIZE] ALIGN(4);
-    s16 audioRingL[FV_AUDIO_RING_FRAMES][FV_AUDIO_FRAME_SAMPLES] ALIGN(4);
-    s16 audioRingR[FV_AUDIO_RING_FRAMES][FV_AUDIO_FRAME_SAMPLES] ALIGN(4);
+    u8 (*audioQueueL)[FV_AUDIO_FRAME_SIZE];
+    u8 (*audioQueueR)[FV_AUDIO_FRAME_SIZE];
+    s16 (*audioRingL)[FV_AUDIO_FRAME_SAMPLES];
+    s16 (*audioRingR)[FV_AUDIO_FRAME_SAMPLES];
 
     // État du shuffle bag (tirage sans remise)
     u16 shuffleIndices[MAX_SHUFFLE_FILES];

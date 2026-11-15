@@ -1,6 +1,7 @@
 #pragma once
 #include "fvDecoder.h"
 #include "fvDisplay.h"
+#include "../../../common/ipc.h"
 
 //the player has 4 stages
 //0 - fetching video data -> done by arm7
@@ -35,6 +36,8 @@ typedef struct
     int vblankPerFrame;
     u32 dlLength;
     int lateCount;
+    int audioOriginFrame;
+    int syncErrorMs;
     bool audioStarted;
     bool firstKeyFrame;
     int curFrame;
@@ -57,6 +60,8 @@ void fv_destroyPlayer(fv_player_t* player);
 void fv_startPlayer(fv_player_t* player);
 void fv_updatePlayer(fv_player_t* player);
 
+void fv_audioOptions(unsigned volume, bool mute, bool mono, int delayMs);
+bool fv_audioStatus(fv_audio_status_t* out);
 fv_scale_mode_t fv_getScaleMode(void);
 void fv_setScaleMode(fv_player_t* player, fv_scale_mode_t mode);
 
