@@ -46,3 +46,19 @@ On DS/DSi, check Down + START during playback and pause, seeking, video changes
 and Up + START screen swapping. A 256x144 video should fill 256x192 in Stretch
 mode and regain equal black bars in Fit mode. The scaling mode lasts for the
 current session.
+
+Controller checks compile the actual input/controller source against minimal
+host substitutes for hardware and drawing. They exercise scaling shortcuts,
+closed-lid touch/navigation, reopening with held buttons and lid closure at EOF.
+They do not emulate the ARM7 sleep service or establish hardware audio behavior.
+
+```sh
+c++ -std=c++11 -Wall -Wextra -Wno-reorder -fsanitize=address,undefined \
+  -Itests/host tests/controller.cpp arm9/source/gui/PlayerController.cpp \
+  arm9/source/gui/core/InputRepeater.cpp -o tmp/controller-test
+./tmp/controller-test
+```
+
+On hardware, close/reopen the lid during playback, while paused and during a
+touch gesture. Confirm playback stays paused and resumes with A, including
+after the console enters sleep.

@@ -246,16 +246,7 @@ void PlayerController::UpdateKeys()
         return;
     }
 
-    if (_inputProvider.Current(KEY_LID))
-    {
-        // pause when lid is closed
-        if (_playing)
-        {
-            fv_pausePlayer(_player);
-            _playing = false;
-        }
-    }
-    else if (_inputProvider.Triggered(KEY_A))
+    if (_inputProvider.Triggered(KEY_A))
     {
         TogglePlayPause();
     }
@@ -412,8 +403,27 @@ PlayerController::NavAction PlayerController::Update()
     _inputProvider.Sample(); // todo: sample more frequently
     _inputProvider.Update();
     _inputRepeater.Update(&_inputProvider);
-    UpdateTouch();
-    UpdateKeys();
+    if (_inputProvider.Current(KEY_LID) || _inputProvider.Released(KEY_LID))
+    {
+        // Lid changes take priority over touch releases, navigation and EOF.
+        // Stay paused on reopening until the user makes a fresh input.
+        if (_playing)
+        {
+            fv_pausePlayer(_player);
+            _playing = false;
+        }
+        _seekPenDown = false;
+        _playPausePenDown = false;
+        _pendingNavAction = NAV_ACTION_NONE;
+        _inputRepeater.Reset();
+        if (_inputProvider.Released(KEY_LID))
+            _inputProvider.PrimeCurrentState();
+    }
+    else
+    {
+        UpdateTouch();
+        UpdateKeys();
+    }
     UpdateDim();
 
     NavAction action = _pendingNavAction;

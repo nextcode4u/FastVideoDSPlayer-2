@@ -108,6 +108,12 @@ In standalone mode, my code limits the number of files in a single directory to 
 - Bars already encoded into the picture remain part of that picture. Use an
   encode without baked-in bars to fill the screen without cropping content.
 
+### Lid behavior
+
+Closing the lid pauses playback. Reopening keeps it paused until a fresh play
+input. Lid changes take priority over touch releases, next/previous controls and
+automatic video changes. Buttons held while reopening do not resume playback.
+
 ### Buttons
 - A – Play/pause
 - Left D-pad – Skip to previous keyframe (hold down to continue)
