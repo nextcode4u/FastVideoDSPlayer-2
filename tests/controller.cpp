@@ -123,14 +123,37 @@ int main()
     assert(seeks == before);
     input(controller, 0);
     assert(seeks > before && !player.isPlaying);
+    // START opens on press without toggling repeat; holding/releasing is inert.
+    assert(input(controller, KEY_START) == C::NAV_ACTION_OPTIONS);
     assert(input(controller, KEY_START) == C::NAV_ACTION_NONE);
-    assert(input(controller, KEY_SELECT | KEY_START) == C::NAV_ACTION_OPTIONS);
     assert(input(controller, 0) == C::NAV_ACTION_NONE);
-    assert(input(controller, KEY_SELECT) == C::NAV_ACTION_NONE);
-    assert(input(controller, KEY_SELECT | KEY_START) == C::NAV_ACTION_OPTIONS);
+    assert(input(controller, KEY_SELECT) == C::NAV_ACTION_TOGGLE_RANDOM);
     assert(input(controller, 0) == C::NAV_ACTION_NONE);
-    assert(input(controller, KEY_START) == C::NAV_ACTION_NONE);
+    assert(input(controller, KEY_START | KEY_SELECT) == C::NAV_ACTION_OPTIONS);
+    assert(input(controller, 0) == C::NAV_ACTION_NONE);
+
+    // Touch buttons activate on release, and dragging away cancels the tap.
+    testTouch = {200, 155};
+    assert(input(controller, KEY_TOUCH) == C::NAV_ACTION_NONE);
+    assert(input(controller, 0) == C::NAV_ACTION_OPTIONS);
+    testTouch = {50, 155};
+    assert(input(controller, KEY_TOUCH) == C::NAV_ACTION_NONE);
     assert(input(controller, 0) == C::NAV_ACTION_TOGGLE_LOOP);
+    testTouch = {200, 155};
+    input(controller, KEY_TOUCH);
+    testTouch = {150, 155};
+    input(controller, KEY_TOUCH);
+    assert(input(controller, 0) == C::NAV_ACTION_NONE);
+
+    // Video-on-touch-screen has no invisible buttons. Lid closure cancels taps.
+    gScreenSwapped = true;
+    testTouch = {200, 155};
+    assert(input(controller, KEY_TOUCH) == C::NAV_ACTION_SHOW_INFO);
+    assert(input(controller, 0) == C::NAV_ACTION_NONE);
+    gScreenSwapped = false;
+    input(controller, KEY_TOUCH);
+    assert(input(controller, KEY_LID) == C::NAV_ACTION_NONE);
+    assert(input(controller, 0) == C::NAV_ACTION_NONE);
 
     // Closing at EOF suppresses automatic next/repeat until an explicit resume.
     input(controller, KEY_A);

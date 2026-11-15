@@ -40,6 +40,7 @@ class PlayerView
     u16 _pauseIconObjAddr;
 
     bool _playing;
+    int _lastRepeat;
     char _title[256], _state[64], _caption[129], _diagnostics[64];
     char _notice1[33], _notice2[33], _lastLines[12][33];
     void DrawDetails();

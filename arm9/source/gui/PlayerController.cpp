@@ -1,5 +1,6 @@
 #include <nds.h>
 #include "PlayerController.h"
+#include "PlayerControls.h"
 #include "../Preferences.h"
 #include <stdio.h>
 
@@ -124,6 +125,14 @@ void PlayerController::UpdateTouch()
             _seekPenDown = true;
             _seekLastFrame = -1;
         }
+        else if (PlayerControls::Options.Contains(touch.px, touch.py))
+        {
+            _touchButton = NAV_ACTION_OPTIONS;
+        }
+        else if (PlayerControls::Repeat.Contains(touch.px, touch.py))
+        {
+            _touchButton = NAV_ACTION_TOGGLE_LOOP;
+        }
         else if (touch.px >= 110 && touch.px < 110 + 36 && touch.py >= 140 && touch.py < 140 + 36)
         {
             _playPausePenDown = true;
@@ -141,12 +150,25 @@ void PlayerController::UpdateTouch()
         if (_seekPenDown && _seekLastFrame >= 0)
             SeekFrame(_seekLastFrame);
         _seekPenDown = false;
+        if (_touchButton != NAV_ACTION_NONE)
+        {
+            _pendingNavAction = _touchButton;
+            _touchButton = NAV_ACTION_NONE;
+        }
 
         if (_playPausePenDown)
         {
             TogglePlayPause();
             _playPausePenDown = false;
         }
+    }
+
+    if (_inputProvider.Current(KEY_TOUCH) && _touchButton != NAV_ACTION_NONE)
+    {
+        const PlayerControls::Rectangle &button = _touchButton == NAV_ACTION_OPTIONS
+                                                     ? PlayerControls::Options : PlayerControls::Repeat;
+        if (!button.Contains(touch.px, touch.py))
+            _touchButton = NAV_ACTION_NONE;
     }
 
     if (_inputProvider.Current(KEY_TOUCH) && _playPausePenDown)
@@ -194,37 +216,14 @@ void PlayerController::UpdateKeys()
         return;
     }
 
-    // Delay single-button toggles until release so either order of the
-    // START+SELECT chord opens options without also changing playback modes.
-    if (_inputProvider.Current(KEY_START) && _inputProvider.Current(KEY_SELECT) &&
-        (_inputProvider.Triggered(KEY_START) || _inputProvider.Triggered(KEY_SELECT)))
-    {
-        _startChord = _selectChord = true;
-        _pendingNavAction = NAV_ACTION_OPTIONS;
-        return;
-    }
-    if (_inputProvider.Released(KEY_START))
-    {
-        if (!_startChord && !startDebounced)
-            _pendingNavAction = NAV_ACTION_TOGGLE_LOOP;
-        _startChord = false;
-        _lastNavActionVBlank[1] = now;
-    }
-    if (_inputProvider.Released(KEY_SELECT))
-    {
-        if (!_selectChord && !selectDebounced)
-            _pendingNavAction = NAV_ACTION_TOGGLE_RANDOM;
-        _selectChord = false;
-        _lastNavActionVBlank[2] = now;
-    }
+    // START opens the same options panel as in the browser. Keep the
+    // optional picture/screen shortcuts when a direction is already held.
     if (!startDebounced && _inputProvider.Triggered(KEY_START))
     {
-        _startChord = _inputProvider.Current(KEY_UP) || _inputProvider.Current(KEY_DOWN);
-        if (_inputProvider.Current(KEY_SELECT))
-        {
-            _pendingNavAction = NAV_ACTION_OPTIONS;
-        }
-        else if (_inputProvider.Current(KEY_UP))
+        _touchButton = NAV_ACTION_NONE;
+        _seekPenDown = _playPausePenDown = false;
+        _lastNavActionVBlank[1] = now;
+        if (_inputProvider.Current(KEY_UP))
         {
             gScreenSwapped = !gScreenSwapped;
             Preferences::values[Preferences::Screen] = gScreenSwapped;
@@ -254,9 +253,16 @@ void PlayerController::UpdateKeys()
                                                  : Preferences::Text("Picture: Fit", "Image: Adapter"),
                         Preferences::Text("Down+START to change", "Bas+START: changer"));
         }
-        // Plain START is handled on release.
-        if (_startChord)
-            _lastNavActionVBlank[1] = now;
+        else
+        {
+            _pendingNavAction = NAV_ACTION_OPTIONS;
+        }
+        return;
+    }
+    if (!selectDebounced && _inputProvider.Triggered(KEY_SELECT))
+    {
+        _pendingNavAction = NAV_ACTION_TOGGLE_RANDOM;
+        _lastNavActionVBlank[2] = now;
         return;
     }
     
@@ -296,7 +302,7 @@ void PlayerController::UpdateKeys()
 void PlayerController::UpdateDim()
 {
     // Wake-up sources for the sub screen: pausing, a touch tap, or START/SELECT
-    // (loop/random confirmation toast). Navigation keys (D-pad, L/R/X/Y) and
+    // (options / shuffle controls). Navigation keys (D-pad, L/R/X/Y) and
     // automatic video chaining must NOT wake it: the screen stays dark.
     if (_captionsVisible || (!_playing && !_videoEnded) || _inputProvider.Triggered(KEY_TOUCH) ||
         _inputProvider.Triggered(KEY_START) || _inputProvider.Triggered(KEY_SELECT))
@@ -430,6 +436,7 @@ PlayerController::NavAction PlayerController::Update()
         }
         _seekPenDown = false;
         _playPausePenDown = false;
+        _touchButton = NAV_ACTION_NONE;
         _pendingNavAction = NAV_ACTION_NONE;
         _inputRepeater.Reset();
         if (_inputProvider.Released(KEY_LID))

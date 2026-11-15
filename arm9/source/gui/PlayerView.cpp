@@ -8,6 +8,8 @@
 #include "circle1.h"
 #include "core/uiUtil.h"
 #include "PlayerView.h"
+#include "ControlSurface.h"
+#include "PlayerControls.h"
 #include "../Preferences.h"
 #include "../MediaText.h"
 extern u32 GetDebounceTicks();
@@ -201,6 +203,14 @@ void PlayerView::Initialize()
     iprintf("\x1b[37m");
     REG_BG2CNT_SUB &= ~BG_PRIORITY_3;
 
+    ControlSurface::Initialize();
+    const PlayerControls::Rectangle buttons[] = {PlayerControls::Repeat, PlayerControls::Options};
+    for (const auto &button : buttons)
+        ControlSurface::Fill(button.x / 8, button.y / 8, button.width / 8, button.height / 8,
+                             ControlSurface::Button);
+    iprintf("\x1b[19;21H%s\x1b[20;22HSTART", Preferences::Text("Options", "Options"));
+    _lastRepeat = -1;
+
     _msgVramCheckpoint = _subObj.GetState();
     _msgLine1Len = 0;
     _msgLine2Len = 0;
@@ -281,6 +291,13 @@ void PlayerView::SetDetails(const char *title, const char *state, const char *ca
 void PlayerView::DrawDetails()
 {
     using Preferences::Text;
+    int repeat = Preferences::values[Preferences::Repeat];
+    if (_lastRepeat != repeat)
+    {
+        iprintf("\x1b[19;3H%-7s\x1b[20;3H%-7s", Text("Repeat", "Boucle"),
+                repeat ? Text("On", "Oui") : Text("Off", "Non"));
+        _lastRepeat = repeat;
+    }
     char lines[12][33] = {};
     char title[256];
     MediaText::DisplayText(_title, strlen(_title), title, sizeof(title));
@@ -295,7 +312,7 @@ void PlayerView::DrawDetails()
     snprintf(lines[2], 33, "%s",
              (_playing ? Text("A: pause B: videos L/R: skip", "A: pause B: videos L/R: saut")
                        : Text("A: play  B: videos L/R: skip", "A: jouer B: videos L/R: saut")));
-    snprintf(lines[3], 33, "%s", Text("START+SELECT: options", "START+SELECT: options"));
+    snprintf(lines[3], 33, "%s", Text("START: options  SELECT: shuffle", "START: options SELECT: aleatoire"));
     snprintf(lines[4], 33, "%.32s", _state);
     if (_msgVisible && (int32_t)(GetDebounceTicks() - _msgHideAtTime) >= 0)
         _msgVisible = false;

@@ -67,12 +67,12 @@ private:
     bool _subBacklightOff;
 
     bool _playing;
-    bool _startChord = false, _selectChord = false;
     bool _captionsVisible = false;
     int _lastTime;
 
     bool _seekPenDown;
     bool _playPausePenDown;
+    NavAction _touchButton = NAV_ACTION_NONE;
     int _seekLastFrame;
     int _seekKeyFrame;
 
