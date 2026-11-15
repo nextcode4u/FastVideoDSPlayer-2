@@ -88,11 +88,39 @@ static ITCM_CODE void fifoHandler(u32 value, void* arg)
     // }
 }
 
+// Keep the selected mode across seeks and successive videos in this session.
+static fv_scale_mode_t sScaleMode = FV_SCALE_FIT;
+static volatile fv_display_transform_t sDisplayTransform;
+static volatile bool sDisplayPending;
+
+fv_scale_mode_t fv_getScaleMode(void)
+{
+    return sScaleMode;
+}
+
+void fv_setScaleMode(fv_player_t* player, fv_scale_mode_t mode)
+{
+    fv_display_transform_t transform;
+    if (!fv_displayTransform(player->fvHeader->height, mode, &transform))
+        return;
+    int irq = enterCriticalSection();
+    sScaleMode = mode;
+    sDisplayTransform = transform;
+    sDisplayPending = true;
+    leaveCriticalSection(irq);
+}
+
 static volatile DTCM_BSS int sVBlankCount;
 
 static ITCM_CODE void vblankHandler()
 {
     sVBlankCount++;
+    if (sDisplayPending)
+    {
+        REG_BG2PD = sDisplayTransform.verticalStep;
+        REG_BG2Y = sDisplayTransform.sourceY;
+        sDisplayPending = false;
+    }
 }
 
 static void setupProjectionMtx()
@@ -248,6 +276,9 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram)
         return false;
 
     int height = player->fvHeader->height;
+    fv_display_transform_t transform;
+    if (!fv_displayTransform(height, sScaleMode, &transform))
+        return false;
 
     player->decoder.yBlocks = height / 8;
     player->decoder.texYOffset = (256 - height) << 1;
@@ -336,9 +367,14 @@ ITCM_CODE void fv_startPlayer(fv_player_t* player)
     REG_BG2PA = 256;
     REG_BG2PB = 0;
     REG_BG2PC = 0;
-    REG_BG2PD = 256;
+    fv_display_transform_t transform = { 256, 0 };
+    fv_displayTransform(player->fvHeader->height, sScaleMode, &transform);
+    int irq = enterCriticalSection();
+    sDisplayPending = false;
+    REG_BG2PD = transform.verticalStep;
     REG_BG2X = 0;
-    REG_BG2Y = -((192 - player->fvHeader->height) >> 1) << 8;
+    REG_BG2Y = transform.sourceY;
+    leaveCriticalSection(irq);
 }
 
 static void startAudio(void)

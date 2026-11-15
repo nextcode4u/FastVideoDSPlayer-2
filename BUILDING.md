@@ -29,3 +29,20 @@ Keep Gericom's original-player credit, Mathos42's fork credit and their license
 explanation in `readme.md`. The root zlib license covers Mathos42's additions;
 it does not relicense the original player. The wait routine retains its own
 notice, and FatFs retains the notice in `arm7/source/fat/ff.c`.
+
+## Display checks
+
+With a host C compiler, the display test checks every supported encoded height,
+including centered Fit output and complete source-row coverage in Stretch mode:
+
+```sh
+mkdir -p tmp
+cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  tests/display.c -o tmp/display-test
+./tmp/display-test
+```
+
+On DS/DSi, check Down + START during playback and pause, seeking, video changes
+and Up + START screen swapping. A 256x144 video should fill 256x192 in Stretch
+mode and regain equal black bars in Fit mode. The scaling mode lasts for the
+current session.

@@ -96,6 +96,18 @@ PLEASE NOTE ! That in TWiLight Menu++ mode, the number of files in a directory i
 In standalone mode, my code limits the number of files in a single directory to 512.  
 
 ## Controls
+
+### Display size (compatibility fork)
+
+- Hold **Down + START** to switch between **Fit** and **Stretch**.
+- **Fit** is the startup default and keeps the encoded proportions, with black
+  bars for widescreen video. **Stretch** fills 256x192 without cropping the
+  encoded picture; widescreen subjects appear taller.
+- The choice survives seeking and video changes until the player exits. Scaling
+  uses the hardware bitmap layer and does not resize decoded reference frames.
+- Bars already encoded into the picture remain part of that picture. Use an
+  encode without baked-in bars to fill the screen without cropping content.
+
 ### Buttons
 - A – Play/pause
 - Left D-pad – Skip to previous keyframe (hold down to continue)

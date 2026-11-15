@@ -1,5 +1,6 @@
 #pragma once
 #include "fvDecoder.h"
+#include "fvDisplay.h"
 
 //the player has 4 stages
 //0 - fetching video data -> done by arm7
@@ -52,6 +53,9 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram);
 void fv_destroyPlayer(fv_player_t* player);
 void fv_startPlayer(fv_player_t* player);
 void fv_updatePlayer(fv_player_t* player);
+
+fv_scale_mode_t fv_getScaleMode(void);
+void fv_setScaleMode(fv_player_t* player, fv_scale_mode_t mode);
 
 void fv_pausePlayer(fv_player_t* player);
 void fv_resumePlayer(fv_player_t* player);

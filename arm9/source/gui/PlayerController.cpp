@@ -210,7 +210,14 @@ void PlayerController::UpdateKeys()
                 _subBacklightOff = false;
             }
         } 
-        else 
+        else if (_inputProvider.Current(KEY_DOWN))
+        {
+            fv_scale_mode_t mode = fv_getScaleMode() == FV_SCALE_FIT ? FV_SCALE_STRETCH : FV_SCALE_FIT;
+            fv_setScaleMode(_player, mode);
+            ShowMessage(mode == FV_SCALE_STRETCH ? "Scale: Stretch" : "Scale: Fit",
+                        "Down+START to change");
+        }
+        else
         {
             _pendingNavAction = NAV_ACTION_TOGGLE_LOOP;
         }
