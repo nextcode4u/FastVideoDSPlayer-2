@@ -30,35 +30,52 @@ explanation in `readme.md`. The root zlib license covers Mathos42's additions;
 it does not relicense the original player. The wait routine retains its own
 notice, and FatFs retains the notice in `arm7/source/fat/ff.c`.
 
-## Display checks
+## Checks
 
-With a host C compiler, the display test checks every supported encoded height,
-including centered Fit output and complete source-row coverage in Stretch mode:
-
-```sh
-mkdir -p tmp
-cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined \
-  tests/display.c -o tmp/display-test
-./tmp/display-test
-```
-
-On DS/DSi, check Down + START during playback and pause, seeking, video changes
-and Up + START screen swapping. A 256x144 video should fill 256x192 in Stretch
-mode and regain equal black bars in Fit mode. The scaling mode lasts for the
-current session.
-
-Controller checks compile the actual input/controller source against minimal
-host substitutes for hardware and drawing. They exercise scaling shortcuts,
-closed-lid touch/navigation, reopening with held buttons and lid closure at EOF.
-They do not emulate the ARM7 sleep service or establish hardware audio behavior.
+On Linux with a C/C++ compiler and `dosfstools` installed:
 
 ```sh
-c++ -std=c++11 -Wall -Wextra -Wno-reorder -fsanitize=address,undefined \
-  -Itests/host tests/controller.cpp arm9/source/gui/PlayerController.cpp \
-  arm9/source/gui/core/InputRepeater.cpp -o tmp/controller-test
-./tmp/controller-test
+bash scripts/test-host.sh
 ```
 
-On hardware, close/reopen the lid during playback, while paused and during a
-touch gesture. Confirm playback stays paused and resumes with A, including
-after the console enters sleep.
+The script builds six AddressSanitizer/UndefinedBehaviorSanitizer test programs:
+
+- display transforms for every supported height;
+- container, keyframe and record validation;
+- audio-ring rotation, timer rollover and synchronization corrections;
+- the actual controller with hardware substitutes (lid priority, chords and paused seeks);
+- playlists, UTF-8/SRT handling, settings bounds, history and per-video defaults;
+- the actual FatFs state service and directory pager on a temporary FAT image,
+  including an injected write failure and forward/backward pages across 140 files.
+
+All generated images and executables stay under ignored `tmp/`. No ROMs, firmware
+or private media are test dependencies.
+
+## Source organization
+
+`common/` holds wire formats and portable validation/math. The ARM7 owns SD/FAT
+access, audio queues and playback clocks. `fileService` limits writes to the two
+state files; `directoryService` returns bounded naturally sorted pages. The ARM9
+`Storage`, `Preferences`, `LibraryState` and `MediaText` modules keep persistence
+and parsing outside the player UI. `OptionsMenu` is shared by browser and player.
+
+`appStack.s` gives foreground ARM9 code 32 KiB in main RAM. Interrupt stacks and
+hot decoder tables stay in DTCM; large libc/UI call chains must not overwrite
+them. Shared IPC data stays in main RAM and is flushed/invalidated at handoff.
+Audio buffers are also in main RAM to leave adequate ARM7 IWRAM stack space.
+Text reads shrink to their actual length once the ARM7 has acknowledged them.
+
+The return helper uses the pinned libnds 1.8 transfer-region ABI (64-bit `time_t`,
+return-stub pointer at +24). Recheck that ABI when changing SDKs. The optional
+Unlaunch route follows the published [autoload protocol](https://problemkaputt.de/gbatek.htm#dsiautoloadonwarmboot).
+
+## Console validation
+
+Use both an ordinary clip and an original 256×144 timed flash-and-beep clip.
+Check Fit/Stretch preserves the top and bottom edges, sound stays aligned over
+time, paused seeks remain silent and paused, and lid reopening requires fresh
+input. Repeat seeking, video changes, queue completion and screen swapping.
+Check state survives a restart, an invalid video returns a useful error, and
+both the caller's return stub and an explicitly configured Unlaunch fallback
+return to the expected application. Emulator results do not establish physical
+SD timing, sound quality or all launcher return routes.

@@ -12,6 +12,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  host-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install FAT image tools
+        run: sudo apt-get update && sudo apt-get install -y dosfstools
+      - name: Run host checks
+        run: bash scripts/test-host.sh
   build:
     runs-on: ubuntu-latest
     # Exact legacy SDK used for the compatibility build: devkitARM r65-1,

@@ -1,3 +1,16 @@
+# Playback enhancement branch
+
+This branch adds English/French options, saved preferences and playback history,
+Fit/Stretch, lid pause, playlists, subtitles, volume controls and audio-clock
+synchronization. See [controls and configuration](PLAYBACK.md) and
+[building and checks](BUILDING.md). These changes are separate from the small
+interrupt-wait compatibility fix and have not been released as a stable build.
+
+The upstream v2.3 notes below are retained for credit and background. The linked
+playback guide describes this branch's current controls and limits. Original
+new contributions in this fork use [LICENSE.enhancements](LICENSE.enhancements);
+that notice does not relicense Gericom's or Mathos42's code.
+
 FastVideoDSPlayer 2
 ===================
 > **Licence** : ce dépôt est un fork de [Gericom/FastVideoDSPlayer](https://github.com/Gericom/FastVideoDSPlayer), publié sans licence explicite (code d'origine : tous droits réservés). La licence [zlib](LICENSE) de ce dépôt ne couvre que mes propres modifications et ajouts (anti-rebond, boucle/aléatoire, mode aléatoire sur toute la carte SD, corrections diverses), pas le code original de Gericom.
