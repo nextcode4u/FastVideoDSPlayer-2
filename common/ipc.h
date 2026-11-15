@@ -10,6 +10,18 @@
 #define IPC_CMD_FIND_PREV_FILE        8
 #define IPC_CMD_FIND_RANDOM_FILE      9
 #define IPC_CMD_LIST_DIR              10
+// File services use USER_02; audio commands use USER_01.
+#define IPC_CMD_FILE_SERVICE 11
+#define FV_FILE_READ 0
+#define FV_FILE_WRITE_STATE 1
+#define FV_FILE_EXISTS 2
+#define IPC_CMD_RETURN_LOADER 12
+#define FV_FILE_LIMIT (256u * 1024u)
+typedef struct {
+    char path[256];
+    void *data;
+    u32 capacity, length, operation, result;
+} fv_file_request_t;
 // Frame replies distinguish normal EOF, backpressure and a failed read.
 #define IPC_FRAME_RETRY 0x0ffffffeu
 #define IPC_FRAME_ERROR 0x0fffffffu
@@ -38,7 +50,7 @@ typedef struct {
 #define FV_MAX_PATH_LEN 256
 
 // one directory entry returned by IPC_CMD_LIST_DIR
-#define FV_BROWSER_NAME_LEN 64
+#define FV_BROWSER_NAME_LEN 256
 
 typedef struct
 {
@@ -55,6 +67,9 @@ typedef struct
     u32 maxEntries;               // in:  capacity of entries[]
     u32 count;                    // out: entries actually written
     u32 total;                    // out: total matching entries in the dir
+    fv_dir_entry_t boundary;      // in: page starts after/before this entry
+    int direction;                // 0: first page, 1: next, -1: previous
+    u32 more;                     // out: more entries in requested direction
 } fv_listdir_req_t;
 
 #define IPC_CMD_ARG_MASK       0x0FFFFFFF
@@ -65,7 +80,6 @@ typedef struct
 #define IPC_ARG_CONTROL_AUDIO_STOP       0
 #define IPC_ARG_CONTROL_AUDIO_START      1
 #define IPC_ARG_CONTROL_AUDIO_STOP_CLEAR 2
-
 #define IPC_ARG_CONTROL_AUDIO_PAUSE 3
 #define IPC_ARG_CONTROL_AUDIO_RESUME 4
 #define IPC_ARG_CONTROL_AUDIO_ARM 5

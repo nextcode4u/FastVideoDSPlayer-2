@@ -5,6 +5,7 @@
 #include "isdprint.h"
 #include "../../common/ipc.h"
 #include "fat.h"
+#include "fileService.h"
 #include "adpcm.h"
 #include "irqWait.h"
 #include "../../common/twlwram.h"
@@ -507,6 +508,13 @@ static bool findRandomFvFile(char *outPath)
 static void handleFindFile(u32 value)
 {
     switch (value >> IPC_CMD_CMD_SHIFT) {
+        case IPC_CMD_FILE_SERVICE:
+        {
+            fv_file_request_t *request = (fv_file_request_t *)(value & IPC_CMD_ARG_MASK);
+            fv_fileService(request);
+            fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_FILE_SERVICE, request->result));
+            break;
+        }
         case IPC_CMD_FIND_NEXT_FILE: {
             char *outPath = (char *)(value & IPC_CMD_ARG_MASK);
             bool found = findAdjacentFvFile(1, outPath);

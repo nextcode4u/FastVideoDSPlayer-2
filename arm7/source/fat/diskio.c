@@ -30,6 +30,7 @@
 
 extern FN_MEDIUM_STARTUP _DLDI_startup_ptr;
 extern FN_MEDIUM_READSECTORS _DLDI_readSectors_ptr;
+extern FN_MEDIUM_WRITESECTORS _DLDI_writeSectors_ptr;
 
 /*-----------------------------------------------------------------------*/
 /* Inidialize a Drive                                                    */
@@ -93,40 +94,12 @@ int sdmmc_sd_startup(void);
 	UINT count			/* Number of sectors to write */
 )
 {
-	DRESULT res;
-	int result;
-
-	/*switch (pdrv) {
-	case DEV_RAM :
-		// translate the arguments here
-
-		result = RAM_disk_write(buff, sector, count);
-
-		// translate the reslut code here
-
-		return res;
-
-	case DEV_MMC :
-		// translate the arguments here
-
-		result = MMC_disk_write(buff, sector, count);
-
-		// translate the reslut code here
-
-		return res;
-
-	case DEV_USB :
-		// translate the arguments here
-
-		result = USB_disk_write(buff, sector, count);
-
-		// translate the reslut code here
-
-		return res;
-	}*/
-	write_sd_sectors_safe(sector, count, buff);
-
-	return RES_OK;
+    if (!count || !buff) return RES_PARERR;
+    if (pdrv == DEV_FAT)
+        return _DLDI_writeSectors_ptr(sector, count, buff) ? RES_OK : RES_ERROR;
+    if (isDSiMode() && pdrv == DEV_SD)
+        return sdmmc_sdcard_writesectors(sector, count, (void*)buff) == 0 ? RES_OK : RES_ERROR;
+    return RES_PARERR;
 }
 
 #endif
@@ -142,6 +115,11 @@ int sdmmc_sd_startup(void);
 	void *buff		/* Buffer to send/receive control data */
 )
 {
-	return RES_OK;
+    if (pdrv != DEV_FAT && !(isDSiMode() && pdrv == DEV_SD)) return RES_PARERR;
+    // Both backends complete sector writes before returning.
+    if (cmd == CTRL_SYNC) return RES_OK;
+    if (cmd == GET_SECTOR_SIZE && buff) { *(WORD*)buff = 512; return RES_OK; }
+    if (cmd == GET_BLOCK_SIZE && buff) { *(DWORD*)buff = 1; return RES_OK; }
+    return RES_PARERR;
 }
 
