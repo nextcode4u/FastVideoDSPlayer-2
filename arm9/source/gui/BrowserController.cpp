@@ -1,4 +1,5 @@
 #include <nds.h>
+#include "../FastVideo/fvWait.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +45,7 @@ static bool RequestListDir(const char* path)
     DC_FlushRange(&sListReq, sizeof(sListReq));
 
     fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_LIST_DIR, (u32)&sListReq));
-    fifoWaitValue32(FIFO_USER_02);
+    fv_waitReply(FIFO_USER_02);
     u32 ok = fifoGetValue32(FIFO_USER_02) & IPC_CMD_ARG_MASK;
     if (!ok)
         return false;

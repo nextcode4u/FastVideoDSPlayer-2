@@ -1,4 +1,5 @@
 #include <nds.h>
+#include "FastVideo/fvWait.h"
 #include <nds/fifocommon.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,7 +146,7 @@ static void switchToAdjacentVideo(bool next)
 {
     fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(next ? IPC_CMD_FIND_NEXT_FILE : IPC_CMD_FIND_PREV_FILE,
                                                (u32)sAdjacentPath));
-    fifoWaitValue32(FIFO_USER_02);
+    fv_waitReply(FIFO_USER_02);
     u32 found = fifoGetValue32(FIFO_USER_02) & IPC_CMD_ARG_MASK;
     if (!found) return;
 
@@ -156,7 +157,7 @@ static void switchToAdjacentVideo(bool next)
 static void switchToRandomVideo()
 {
     fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_FIND_RANDOM_FILE, (u32)sAdjacentPath));
-    fifoWaitValue32(FIFO_USER_02);
+    fv_waitReply(FIFO_USER_02);
     u32 found = fifoGetValue32(FIFO_USER_02) & IPC_CMD_ARG_MASK;
     if (!found) return;
 
@@ -497,6 +498,10 @@ static bool RunPlayerLoop(bool canReturnToBrowser)
     while (sPlayerController && !shouldExit)
     {
         PlayerController::NavAction action = sPlayerController->Update();
+        if (sPlayer.readError) {
+            sPlayerController->ShowMessage("Video read failed", "B: back to browser");
+            if (action != PlayerController::NAV_ACTION_EXIT) continue;
+        }
         switch (action)
         {
             case PlayerController::NAV_ACTION_NEXT:
@@ -588,7 +593,7 @@ int main(int argc, char** argv)
     fifoSetValue32Handler(FIFO_USER_01, NULL, NULL);
 
     fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_HANDSHAKE, 0));
-    fifoWaitValue32(FIFO_USER_01);
+    fv_waitReply(FIFO_USER_01);
     u32 handShake = fifoGetValue32(FIFO_USER_01);
 
     if (canUseWram && (handShake & IPC_CMD_ARG_MASK) == 0)
@@ -600,7 +605,7 @@ int main(int argc, char** argv)
     {
         DC_FlushRange(gDldiStub, 16 * 1024);
         fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_SETUP_DLDI, (u32)gDldiStub));
-        fifoWaitValue32(FIFO_USER_01);
+        fv_waitReply(FIFO_USER_01);
         fifoGetValue32(FIFO_USER_01);
     }
 

@@ -9,6 +9,7 @@
 #include "irqWait.h"
 #include "../../common/twlwram.h"
 #include "fvPlayer7.h"
+#include "../../common/fvValidation.h"
 
 #define FV_AUDIO_START_OFFSET 12
 #define FV_AUDIO_CH_LEFT 1
@@ -130,7 +131,8 @@ static void updateAudio(void)
 
 static void gotoKeyFrameDirect(const fv_keyframe_t *keyFrameData)
 {
-    f_lseek(&sPlayer.file, keyFrameData->offset);
+    if (f_lseek(&sPlayer.file, keyFrameData->offset) != FR_OK) sPlayer.fileError = true;
+    sPlayer.nextFrame = keyFrameData->frame;
     stopAudio();
     sPlayer.ringPos = 0;
     sPlayer.queueReadPtr = 0;
@@ -144,9 +146,14 @@ static void gotoKeyFrameDirect(const fv_keyframe_t *keyFrameData)
 
 static void readKeyFrame(u32 index, fv_keyframe_t *out)
 {
-    UINT br;
-    f_lseek(&sPlayer.file, sizeof(fv_header_t) + sizeof(fv_keyframe_t) * index);
-    f_read(&sPlayer.file, out, sizeof(fv_keyframe_t), &br);
+    UINT br = 0;
+    memset(out, 0, sizeof(*out));
+    if (index >= sPlayer.nrKeyFrames ||
+        f_lseek(&sPlayer.file, sizeof(fv_header_t) + sizeof(fv_keyframe_t) * index) != FR_OK ||
+        f_read(&sPlayer.file, out, sizeof(*out), &br) != FR_OK || br != sizeof(*out) ||
+        out->frame >= sPlayer.header.nrFrames ||
+        out->offset < sizeof(fv_header_t) + (uint64_t)sPlayer.nrKeyFrames * sizeof(*out) ||
+        (uint64_t)out->offset + 4 > f_size(&sPlayer.file)) sPlayer.fileError = true;
 }
 
 static u32 gotoKeyFrame(u32 keyFrame)
@@ -457,25 +464,46 @@ static void handleFifo(u32 value)
     UINT br;
     switch (value >> IPC_CMD_CMD_SHIFT) {
         case IPC_CMD_READ_FRAME: {
-            u32 len;
-            if (f_read(&sPlayer.file, &len, 4, &br) != FR_OK || br != 4) {
-                fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_READ_FRAME, 0));
-                break;
+            u32 len = 0, reply = IPC_FRAME_ERROR;
+            FSIZE_t position = f_tell(&sPlayer.file);
+            if (sPlayer.fileError) goto frameReply;
+            if (sPlayer.nextFrame == sPlayer.header.nrFrames) { reply = 0; goto frameReply; }
+            if (f_read(&sPlayer.file, &len, 4, &br) != FR_OK || br != 4 ||
+                !fv_validRecord(len, f_size(&sPlayer.file) - f_tell(&sPlayer.file))) goto frameError;
+            unsigned audioFrames = len >> 17;
+            if (audioFrames > FV_AUDIO_QUEUE_FRAMES - sPlayer.queueFrameCount) {
+                if (f_lseek(&sPlayer.file, position) != FR_OK) goto frameError;
+                reply = IPC_FRAME_RETRY;
+                goto frameReply;
             }
-            f_read(&sPlayer.file, (void *)(value & IPC_CMD_ARG_MASK), len & 0x1FFFF, &br);
-            fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_READ_FRAME, len & 0x1FFFF));
-            u32 audioFrames = len >> 17;
-            for (int i = 0; i < audioFrames; i++) {
-                f_read(&sPlayer.file, sPlayer.audioQueueL[sPlayer.queueWritePtr], FV_AUDIO_FRAME_SIZE, &br);
-                f_read(&sPlayer.file, sPlayer.audioQueueR[sPlayer.queueWritePtr], FV_AUDIO_FRAME_SIZE, &br);
-                if (++sPlayer.queueWritePtr == FV_AUDIO_QUEUE_FRAMES)
-                    sPlayer.queueWritePtr = 0;
+            u8 *video = (u8 *)(value & IPC_CMD_ARG_MASK);
+            unsigned bytes = len & 0x1ffff;
+            if (f_read(&sPlayer.file, video, bytes, &br) != FR_OK || br != bytes) goto frameError;
+            memset(video + bytes, 0, 4); // decoder word lookahead
+            for (unsigned i = 0; i < audioFrames; ++i) {
+                u8 *left = sPlayer.audioQueueL[sPlayer.queueWritePtr];
+                u8 *right = sPlayer.audioQueueR[sPlayer.queueWritePtr];
+                if (f_read(&sPlayer.file, left, FV_AUDIO_FRAME_SIZE, &br) != FR_OK || br != FV_AUDIO_FRAME_SIZE ||
+                    f_read(&sPlayer.file, right, FV_AUDIO_FRAME_SIZE, &br) != FR_OK || br != FV_AUDIO_FRAME_SIZE ||
+                    (left[2] | left[3] << 8) > 88 || (right[2] | right[3] << 8) > 88) goto frameError;
+                sPlayer.queueWritePtr = (sPlayer.queueWritePtr + 1) % FV_AUDIO_QUEUE_FRAMES;
                 sPlayer.queueFrameCount++;
+                updateAudio();
             }
+            sPlayer.nextFrame++;
+            reply = bytes;
+            goto frameReply;
+frameError:
+            sPlayer.fileError = true;
+            stopAudio();
+frameReply:
+            fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_READ_FRAME, reply));
             break;
         }
         case IPC_CMD_OPEN_FILE: {
             const char *path = (const char *)(value & IPC_CMD_ARG_MASK);
+            stopAudio();
+            sPlayer.fileError = false;
             f_close(&sPlayer.file);
             FRESULT result = f_open(&sPlayer.file, path, FA_OPEN_EXISTING | FA_READ);
             if (result != FR_OK)
@@ -488,7 +516,21 @@ static void handleFifo(u32 value)
         }
         case IPC_CMD_READ_HEADER: {
             fv_header_t *header = (fv_header_t *)(value & IPC_CMD_ARG_MASK);
-            f_read(&sPlayer.file, header, sizeof(fv_header_t), &br);
+            bool valid = f_read(&sPlayer.file, header, sizeof(*header), &br) == FR_OK &&
+                br == sizeof(*header) && fv_validHeader(header, f_size(&sPlayer.file));
+            fv_keyframe_t previous = {0}, key;
+            for (u32 i = 0; valid && i < header->nrKeyFrames; ++i) {
+                valid = f_read(&sPlayer.file, &key, sizeof(key), &br) == FR_OK && br == sizeof(key) &&
+                    fv_validKey(header, &key, i ? &previous : NULL, f_size(&sPlayer.file));
+                previous = key;
+            }
+            if (!valid) {
+                sPlayer.fileError = true;
+                memset(header, 0, sizeof(*header));
+                fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_READ_HEADER, 0));
+                break;
+            }
+            sPlayer.header = *header;
             sPlayer.nrKeyFrames = header->nrKeyFrames;
             gotoKeyFrame(0);
             u32 num = header->fpsNum;
@@ -508,7 +550,7 @@ static void handleFifo(u32 value)
         }
         case IPC_CMD_GOTO_KEYFRAME: {
             u32 frame = gotoKeyFrame(value & IPC_CMD_ARG_MASK);
-            fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_KEYFRAME, frame));
+            fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_KEYFRAME, sPlayer.fileError ? IPC_FRAME_ERROR : frame));
             break;
         }
         case IPC_CMD_GOTO_NEAREST_KEYFRAME: {
@@ -516,7 +558,7 @@ static void handleFifo(u32 value)
             u32 resultFrame;
             u32 keyFrame = gotoNearestKeyFrame(frame, &resultFrame);
             fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_NEAREST_KEYFRAME, keyFrame));
-            fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_KEYFRAME, resultFrame));
+            fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_KEYFRAME, sPlayer.fileError ? IPC_FRAME_ERROR : resultFrame));
             break;
         }
         case IPC_CMD_CONTROL_AUDIO: {

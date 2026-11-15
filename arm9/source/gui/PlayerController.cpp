@@ -372,6 +372,7 @@ PlayerController::NavAction PlayerController::Update()
         _pendingNavAction = NAV_ACTION_VIDEO_ENDED;
     }
 
+    if (_player->readError) _playing = false;
     _view.SetPlaying(_playing);
     if (_playing)
     {

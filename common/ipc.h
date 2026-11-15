@@ -10,6 +10,9 @@
 #define IPC_CMD_FIND_PREV_FILE        8
 #define IPC_CMD_FIND_RANDOM_FILE      9
 #define IPC_CMD_LIST_DIR              10
+// Frame replies distinguish normal EOF, backpressure and a failed read.
+#define IPC_FRAME_RETRY 0x0ffffffeu
+#define IPC_FRAME_ERROR 0x0fffffffu
 #define IPC_CMD_SETUP_DLDI            13
 #define IPC_CMD_HANDSHAKE             15
 

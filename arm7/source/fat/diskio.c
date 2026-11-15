@@ -35,7 +35,7 @@ extern FN_MEDIUM_READSECTORS _DLDI_readSectors_ptr;
 /* Inidialize a Drive                                                    */
 /*-----------------------------------------------------------------------*/
 
-void sdmmc_sd_startup();
+int sdmmc_sd_startup(void);
 
  DSTATUS disk_initialize (
 	BYTE pdrv				/* Physical drive nmuber to identify the drive */
@@ -43,13 +43,11 @@ void sdmmc_sd_startup();
 {
 	if (pdrv == DEV_FAT)
 	{
-		_DLDI_startup_ptr();
-		return 0;
+		return _DLDI_startup_ptr() ? 0 : STA_NOINIT;
 	}
 	else if (isDSiMode() && pdrv == DEV_SD)
 	{
-		sdmmc_sd_startup();
-		return 0;
+		return sdmmc_sd_startup() == 0 ? 0 : STA_NOINIT;
 	}
 
 	return STA_NOINIT;
@@ -70,13 +68,11 @@ void sdmmc_sd_startup();
 {
 	if (pdrv == DEV_FAT)
 	{
-		_DLDI_readSectors_ptr(sector, count, buff);
-		return RES_OK;
+		return _DLDI_readSectors_ptr(sector, count, buff) ? RES_OK : RES_ERROR;
 	}
 	else if (isDSiMode() && pdrv == DEV_SD)
 	{
-		sdmmc_sdcard_readsectors(sector, count, buff);
-		return RES_OK;
+		return sdmmc_sdcard_readsectors(sector, count, buff) == 0 ? RES_OK : RES_ERROR;
 	}
 
 	return RES_PARERR;

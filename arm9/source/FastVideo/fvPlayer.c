@@ -4,13 +4,14 @@
 #include "../../common/twlwram.h"
 #include "fvMcData.h"
 #include "fvPlayer.h"
+#include "fvWait.h"
 
 static ITCM_CODE void requestDataBuffer(fv_player_t* player)
 {
     int irq = enterCriticalSection();
     do
     {
-        if (player->isRequesting)
+        if (player->isRequesting || player->inputEnded || player->readError || !player->freeDataBufferCount)
             break;
         player->isRequesting = TRUE;
 
@@ -58,13 +59,17 @@ static ITCM_CODE void fifoHandler(u32 value, void* arg)
         }
         player->isRequesting = FALSE;
         u32 length = value & IPC_CMD_ARG_MASK;
+        if (length == IPC_FRAME_RETRY) { player->retryRead = true; return; }
+        if (length == IPC_FRAME_ERROR) { player->readError = true; return; }
+        player->retryRead = false;
         if (length == 0)
         {
             // this means the video has ended: let the main loop stop
             // playback/audio cleanly (and possibly move on to another video)
-            player->videoEnded = true;
+            player->inputEnded = true;
             return;
         }
+        DC_InvalidateRange(fv_getPlayerDataBuffer(player, player->dataBufferWriteIdx), length + 4);
         player->frameDataSizes[player->dataBufferWriteIdx] = length;
         player->frameHasAudio[player->dataBufferWriteIdx] = true;
         if (++player->dataBufferWriteIdx == FV_PLAYER_DATA_BUFFER_COUNT)
@@ -75,7 +80,8 @@ static ITCM_CODE void fifoHandler(u32 value, void* arg)
     }
     else if (cmd == IPC_CMD_GOTO_KEYFRAME)
     {
-        player->curFrame = value & IPC_CMD_ARG_MASK;
+        if ((value & IPC_CMD_ARG_MASK) == IPC_FRAME_ERROR) player->readError = true;
+        else player->curFrame = value & IPC_CMD_ARG_MASK;
         player->seekComplete = true;
     }
     else if (cmd == IPC_CMD_GOTO_NEAREST_KEYFRAME)
@@ -166,8 +172,8 @@ static void setupTextureMtx()
 static void setup3DEngine()
 {
     powerOn(POWER_3D_CORE | POWER_MATRIX);
-    while (GFX_BUSY)
-        ;
+    u32 waitStart = fv_ticks();
+    while (GFX_BUSY) fv_checkWait(waitStart);
     GFX_STATUS |= 1 << 29; // clear fifo
     glResetMatrixStack();
     glFlush(1);
@@ -243,6 +249,7 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram)
         player->dataBufferIsHeap = true;
     }
     player->fvHeader = memalign(32, sizeof(fv_header_t));
+    if (!player->dataBuffer || !player->fvHeader) return false;
     player->dataBufferReadIdx = 0;
     player->dataBufferWriteIdx = 0;
     player->validDataBufferCount = 0;
@@ -253,16 +260,18 @@ bool fv_initPlayer(fv_player_t* player, const char* filePath, bool useWram)
     vramSetBankB(VRAM_B_LCD);
     vramSetBankC(VRAM_C_LCD);
 
+    // Publish the path before the other CPU reads it.
+    DC_FlushRange(filePath, strlen(filePath) + 1);
     // open file
     fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_OPEN_FILE, filePath));
-    fifoWaitValue32(FIFO_USER_01);
+    fv_waitReply(FIFO_USER_01);
     if ((fifoGetValue32(FIFO_USER_01) & IPC_CMD_ARG_MASK) == 0)
         return false;
 
     // open file and read header
     DC_InvalidateRange(player->fvHeader, sizeof(fv_header_t));
     fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_READ_HEADER, (u32)player->fvHeader));
-    fifoWaitValue32(FIFO_USER_01);
+    fv_waitReply(FIFO_USER_01);
     player->vblankPerFrame = fifoGetValue32(FIFO_USER_01) & IPC_CMD_ARG_MASK;
     if (player->fvHeader->signature != FV_SIGNATURE)
         return false;
@@ -351,10 +360,15 @@ ITCM_CODE void fv_startPlayer(fv_player_t* player)
     player->dataBufferReadIdx = 0;
     player->dataBufferWriteIdx = 0;
     player->isPlaying = true;
+    player->inputEnded = false;
+    player->videoEnded = false;
     // start by loading the first blocks of data
     requestDataBuffer(player);
-    while (player->validDataBufferCount < 3)
-        ;
+    u32 waitStart = fv_ticks();
+    while (player->validDataBufferCount < 3 && !player->inputEnded && !player->readError && !player->retryRead) {
+        fv_checkWait(waitStart);
+        swiWaitForVBlank();
+    }
     swiWaitForVBlank();
     sVBlankCount = 0;
     irqSet(IRQ_VBLANK, vblankHandler);
@@ -394,6 +408,8 @@ static void stopAudioClearQueue(void)
 
 ITCM_CODE void fv_updatePlayer(fv_player_t* player)
 {
+    if (player->retryRead && player->isPlaying) requestDataBuffer(player);
+    if (player->readError) { player->isPlaying = false; stopAudio(); return; }
     if (player->validDataBufferCount > 0)
     {
         player->stage1Buffer = player->dataBufferReadIdx;
@@ -460,9 +476,7 @@ ITCM_CODE void fv_updatePlayer(fv_player_t* player)
         sVBlankCount > player->vblankPerFrame)
     {
         player->lateCount++;
-        int irq = enterCriticalSection();
-        iprintf("late %d, %d, %d\n", player->lateCount, player->stage2IsPFrame, REG_VCOUNT);
-        leaveCriticalSection(irq);
+
         swiWaitForVBlank();
     }
     else
@@ -515,13 +529,16 @@ ITCM_CODE void fv_updatePlayer(fv_player_t* player)
     player->stage2VramBlock = stage1VramBlock;
     if (doStartCapture)
         startCapture(stage1VramBlock);
+    if (player->inputEnded && !player->validDataBufferCount &&
+        player->stage2Buffer == -1 && player->stage3VramBlock == -1)
+        player->videoEnded = true;
 }
 
 void fv_pausePlayer(fv_player_t* player)
 {
     player->isPlaying = false;
-    while (player->isRequesting)
-        ;
+    u32 waitStart = fv_ticks();
+    while (player->isRequesting) fv_checkWait(waitStart);
     stopAudioClearQueue();
     player->audioStarted = false;
     for (int i = 0; i < FV_PLAYER_DATA_BUFFER_COUNT; i++)
@@ -542,14 +559,12 @@ void fv_gotoKeyFrame(fv_player_t* player, u32 keyFrame)
 
     player->isPlaying = false;
     player->seekComplete = false;
-    while (player->isRequesting)
-        ;
+    u32 waitStart = fv_ticks();
+    while (player->isRequesting) fv_checkWait(waitStart);
     stopAudio();
     fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_KEYFRAME, keyFrame));
-    while (!player->seekComplete)
-        ;
-    while (REG_DISPCAPCNT & DCAP_ENABLE)
-        ;
+    while (!player->seekComplete) fv_checkWait(waitStart);
+    while (REG_DISPCAPCNT & DCAP_ENABLE) fv_checkWait(waitStart);
     player->lastKeyFrame = keyFrame;
 }
 
@@ -560,12 +575,10 @@ void fv_gotoNearestKeyFrame(fv_player_t* player, u32 frame)
 
     player->isPlaying = false;
     player->seekComplete = false;
-    while (player->isRequesting)
-        ;
+    u32 waitStart = fv_ticks();
+    while (player->isRequesting) fv_checkWait(waitStart);
     stopAudio();
     fifoSendValue32(FIFO_USER_01, IPC_CMD_PACK(IPC_CMD_GOTO_NEAREST_KEYFRAME, frame));
-    while (!player->seekComplete)
-        ;
-    while (REG_DISPCAPCNT & DCAP_ENABLE)
-        ;
+    while (!player->seekComplete) fv_checkWait(waitStart);
+    while (REG_DISPCAPCNT & DCAP_ENABLE) fv_checkWait(waitStart);
 }

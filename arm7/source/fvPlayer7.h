@@ -15,6 +15,9 @@ typedef struct
     FIL file;
     fpsa_t fpsa;
     u32 nrKeyFrames;
+    fv_header_t header;
+    u32 nextFrame;
+    bool fileError;
     
     // directory (without trailing slash) and file name of the currently
     // open video, kept so we can look up the previous/next video file
