@@ -3,8 +3,7 @@
 #include <string.h>
 #include <initializer_list>
 #include "OptionsMenu.h"
-#include "BrowserView.h"
-#include "ControlSurface.h"
+#include "UiCanvas.h"
 #include "PlayerController.h"
 #include "../Preferences.h"
 #include "../MediaText.h"
@@ -19,9 +18,7 @@ static void Begin()
 {
     PlayerController::RestoreSubScreen();
     lcdMainOnTop();
-    BrowserView view;
-    view.Initialize();
-    ControlSurface::Initialize();
+    UiCanvas::Get().Initialize();
     scanKeys(); // Consume the button/touch that opened the panel.
 }
 static unsigned Keys()
@@ -34,36 +31,51 @@ static unsigned Keys()
 }
 static void Frame(const char *title, int page, int pages)
 {
-    consoleClear();
-    ControlSurface::Fill(0, 0, 32, 24, ControlSurface::Header);
-    ControlSurface::Fill(1, 4, 30, 16, ControlSurface::Panel);
-    ControlSurface::Fill(1, 21, 10, 3, ControlSurface::Button);
-    ControlSurface::Fill(12, 21, 9, 3, ControlSurface::Button);
-    ControlSurface::Fill(22, 21, 9, 3, ControlSurface::Button);
-    iprintf("\x1b[37m\x1b[1;2H%.23s\x1b[1;26H%d/%d", title, page + 1, pages);
-    iprintf("\x1b[22;2H%s\x1b[22;13H%s\x1b[22;23H%s",
-            Text("B: Back", "B: Retour"), Text("< L Prev", "< L Prec"), Text("R Next >", "R Suiv >"));
+    auto &ui = UiCanvas::Get();
+    ui.Clear();
+    ui.TextAt(16, 9, title, UiCanvas::Bright, 16, 216, UiCanvas::Heading);
+    char number[32];
+    snprintf(number, sizeof(number), "%d / %d", page + 1, pages);
+    ui.TextAt(240 - ui.Width(number), 13, number, UiCanvas::Muted);
+    ui.Fill(16, 46, 224, 1, UiCanvas::Line);
+    const int centres[] = {44, 132, 212};
+    const char *labels[] = {Text("B Back", "B Retour"), Text("L Prev", "L Prec"), Text("R Next", "R Suiv")};
+    for (int i = 0; i < 3; ++i)
+    {
+        ui.Fill(centres[i] - 36, 172, 72, 20, UiCanvas::Surface);
+        ui.Centered(centres[i], 175, labels[i], UiCanvas::Text);
+    }
 }
-static void Row(int index, const char *text, bool selected)
+static void Row(int index, const char *text, bool selected, const char *value = nullptr)
 {
-    char visible[29];
+    auto &ui = UiCanvas::Get();
+    char visible[256];
     MediaText::DisplayText(text, strlen(text), visible, sizeof(visible));
-    int y = 4 + index * 2;
+    int y = 52 + index * 14;
     if (selected)
-        ControlSurface::Fill(1, y, 30, 2, ControlSurface::Selected);
-    iprintf("\x1b[%d;1H%c%-28s", y, selected ? '>' : ' ', visible);
+    {
+        ui.Fill(8, y - 1, 240, 14, UiCanvas::Surface);
+        ui.Fill(8, y + 1, 2, 10, UiCanvas::Accent);
+    }
+    int right = value ? 240 - ui.Width(value) : 248;
+    ui.TextAt(16, y, visible, selected ? UiCanvas::Bright : UiCanvas::Text, 16, right - 8);
+    if (value) ui.TextAt(right, y, value, selected ? UiCanvas::Accent : UiCanvas::Muted);
+}
+static void Hint(const char *text)
+{
+    UiCanvas::Get().TextAt(16, 31, text, UiCanvas::Muted, 16, 240);
 }
 static int TouchRow(const touchPosition &touch)
 {
-    if (touch.px < 8 || touch.px >= 248 || touch.py < 32 || touch.py >= 160)
+    if (touch.px < 8 || touch.px >= 248 || touch.py < 51 || touch.py >= 163)
         return -1;
-    return (touch.py - 32) / 16;
+    return (touch.py - 51) / 14;
 }
 static unsigned FooterTouch(const touchPosition &touch)
 {
-    if (touch.py < 168 || touch.py >= 192)
+    if (touch.py < 172 || touch.py >= 192)
         return 0;
-    if (touch.px >= 8 && touch.px < 88)
+    if (touch.px >= 8 && touch.px < 80)
         return KEY_B;
     if (touch.px >= 96 && touch.px < 168)
         return KEY_L;
@@ -87,8 +99,10 @@ int Choose(const char *title, const char *const *items, int count, int selected)
             int start = (selected / RowsPerPage) * RowsPerPage;
             for (int i = start; i < count && i < start + RowsPerPage; ++i)
                 Row(i - start, items[i], i == selected);
-            iprintf("\x1b[3;2H%d/%d  %s", selected + 1, count,
-                    Text("A: choose", "A: choisir"));
+            char hint[64];
+            snprintf(hint, sizeof(hint), "%d / %d   %s", selected + 1, count, Text("A: choose", "A: choisir"));
+            Hint(hint);
+            UiCanvas::Get().Present();
             dirty = false;
         }
         unsigned keys = Keys();
@@ -122,8 +136,32 @@ int Choose(const char *title, const char *const *items, int count, int selected)
 void Notice(const char *message)
 {
     Begin();
-    ControlSurface::Fill(0, 0, 32, 24, ControlSurface::Header);
-    iprintf("%.240s\n\n%s", message, Text("A / B: continue", "A / B: continuer"));
+    auto &ui = UiCanvas::Get();
+    ui.Clear();
+    ui.TextAt(16, 9, Text("Player", "Lecteur"), UiCanvas::Bright, 16, 240, UiCanvas::Heading);
+    char visible[256];
+    MediaText::DisplayText(message, strlen(message), visible, sizeof(visible));
+    size_t used = 0, length = strlen(visible);
+    for (int y = 45; used < length && y < 150; y += 15)
+    {
+        char line[256] = {};
+        size_t take = 0, space = 0;
+        while (used + take < length)
+        {
+            line[take] = visible[used + take]; line[take + 1] = 0;
+            if (ui.Width(line) > 224) break;
+            if (line[take] == ' ') space = take;
+            ++take;
+        }
+        if (used + take < length && space) take = space;
+        if (!take) take = 1;
+        line[take] = 0;
+        ui.TextAt(16, y, line);
+        used += take;
+        while (visible[used] == ' ') ++used;
+    }
+    ui.TextAt(16, 174, Text("A / B: continue", "A / B: continuer"), UiCanvas::Muted);
+    ui.Present();
     while (!(Keys() & (KEY_A | KEY_B | KEY_START)))
     {
     }
@@ -196,22 +234,23 @@ Action Show(bool playing, const char *currentDirectory)
             Frame(Text(en[page], fr[page]), page, PageCount);
             for (int i = 0; i < count; ++i)
             {
-                char row[80];
                 if (entries[i].setting)
                 {
                     auto key = (Preferences::Key)entries[i].value;
                     char value[24];
                     Preferences::ValueText(key, value, sizeof(value));
-                    snprintf(row, sizeof(row), "%s: %s",
-                             Text(Preferences::options[key].english, Preferences::options[key].french), value);
+                    Row(i, Text(Preferences::options[key].english, Preferences::options[key].french),
+                        i == selected, value);
                 }
                 else
-                    snprintf(row, sizeof(row), "%s", ActionText((Action)entries[i].value));
-                Row(i, row, i == selected);
+                    Row(i, ActionText((Action)entries[i].value), i == selected);
             }
-            iprintf("\x1b[3;2H%s%s", entries[selected].setting
-                        ? Text("< > / A: change", "< > / A: changer") : Text("A: open", "A: ouvrir"),
-                    changed ? Text("  [edited]", "  [modifie]") : "");
+            char hint[64];
+            snprintf(hint, sizeof(hint), "%s%s", entries[selected].setting
+                        ? Text("Left / Right: change", "Gauche / Droite: changer") : Text("A: open", "A: ouvrir"),
+                    changed ? Text("   Edited", "   Modifie") : "");
+            Hint(hint);
+            UiCanvas::Get().Present();
             dirty = false;
         }
         unsigned keys = Keys();

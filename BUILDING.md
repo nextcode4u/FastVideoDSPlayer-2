@@ -32,19 +32,21 @@ notice, and FatFs retains the notice in `arm7/source/fat/ff.c`.
 
 ## Checks
 
-On Linux with a C/C++ compiler and `dosfstools` installed:
+On Linux with a C/C++ compiler, Python 3 and `dosfstools` installed:
 
 ```sh
 bash scripts/test-host.sh
 ```
 
-The script builds six AddressSanitizer/UndefinedBehaviorSanitizer test programs:
+The script builds seven AddressSanitizer/UndefinedBehaviorSanitizer test programs:
 
 - display transforms for every supported height;
 - container, keyframe and record validation;
 - audio-ring rotation, timer rollover and synchronization corrections;
 - the actual controller with hardware substitutes (lid priority, options/touch controls, screen shortcuts and paused seeks);
 - playlists, UTF-8/SRT handling, settings bounds, history and per-video defaults;
+- the actual player layout with the shipped fonts, clipping, subtitle/notice separation
+  and unchanged-screen upload checks;
 - the actual FatFs state service and directory pager on a temporary FAT image,
   including an injected write failure and forward/backward pages across 140 files.
 
@@ -64,6 +66,12 @@ hot decoder tables stay in DTCM; large libc/UI call chains must not overwrite
 them. Shared IPC data stays in main RAM and is flushed/invalidated at handoff.
 Audio buffers are also in main RAM to leave adequate ARM7 IWRAM stack space.
 Text reads shrink to their actual length once the ARM7 has acknowledged them.
+
+`UiCanvas` shares one cached 4-bit tiled controls screen between the player and
+its menus. It uses 24 KiB of pixels, 5 KiB of glyph scratch space and the existing
+32 KiB sub-background VRAM bank. Only changed 8-pixel bands are uploaded. The
+existing Roboto fonts supply headings, labels and times; player graphics do not
+require new SD assets. Video decoding and its main-screen buffers are separate.
 
 The return helper uses the pinned libnds 1.8 transfer-region ABI (64-bit `time_t`,
 return-stub pointer at +24). Recheck that ABI when changing SDKs. The optional

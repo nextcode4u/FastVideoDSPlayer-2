@@ -12,10 +12,10 @@ path as `argv[1]` from a compatible launcher. The default video folder is
 | Control | During playback |
 | --- | --- |
 | A / centre touch button | Pause or resume |
-| B | Return to the video browser |
+| B / back arrow | Return to the video browser |
 | Left / Right | Jump 5, 10 or 30 seconds, aligned to an encoded keyframe |
 | Touch timeline | Preview a destination while dragging; seek on release |
-| L / Y; R / X | Previous; next video |
+| L / Y; R / X; Previous/Next touch buttons | Previous; next video |
 | START / Options touch button | Open options; START or B closes them |
 | Repeat touch button | Toggle repeat |
 | SELECT | Cycle shuffle |
@@ -23,7 +23,10 @@ path as `argv[1]` from a compatible launcher. The default video folder is
 | Down + START | Toggle Fit / Stretch |
 | Close lid | Pause; reopening leaves playback paused until fresh input |
 
-The playback screen has separate Repeat, Play/Pause and Options touch controls.
+The playback screen groups Repeat, Previous, Play/Pause, Next and Options below
+the timeline. The header shows the title, playback state, picture mode and volume.
+Subtitles have their own area; brief status messages use the header instead of
+covering the subtitles. Long titles scroll within the header's bounds.
 Options are grouped into Playback, Picture, Sound and Library pages. Use L/R or
 the on-screen page buttons; bookmarks, recent videos and the queue are in Library.
 
@@ -77,8 +80,8 @@ must fit in 255 UTF-8 bytes. Files still need to exist and pass the video checks
 For subtitles, place `Film.srt` beside `Film.fv`. Supported SRT timestamps use
 `hh:mm:ss,mmm --> hh:mm:ss,mmm`; cues must be in chronological order. The player
 loads at most 256 KiB and 2,048 cues. Text appears on the controls screen with
-word wrapping; it does not cover the video. HTML styling is stripped. The DS
-console font transliterates common Latin accents and substitutes unsupported
+word wrapping; it does not cover the video. HTML styling is stripped. Text display
+transliterates common Latin accents and substitutes unsupported
 characters; UTF-8 input support does not imply full-script font coverage.
 
 ## Returning to a launcher
