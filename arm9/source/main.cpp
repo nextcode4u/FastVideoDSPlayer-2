@@ -572,7 +572,7 @@ u32 GetDebounceTicks()
     return ((u32)TIMER1_DATA << 16) | (u32)TIMER0_DATA;
 }
 
-int main(int argc, char** argv)
+extern "C" int applicationMain(int argc, char** argv)
 {
     DC_FlushAll();
 
