@@ -8,44 +8,48 @@
 class BrowserController
 {
 public:
-    enum Action
-    {
-        ACT_NONE = 0,
-        ACT_OPEN_DIR,
-        ACT_PLAY,
-        ACT_PARENT,
-        ACT_TOGGLE_LOOP,
-        ACT_TOGGLE_RANDOM,
-        ACT_EXIT
-    };
+  enum Action
+  {
+      ACT_NONE = 0,
+      ACT_OPEN_DIR,
+      ACT_PLAY,
+      ACT_PARENT,
+      ACT_TOGGLE_LOOP,
+      ACT_TOGGLE_RANDOM,
+      ACT_SETTINGS,
+      ACT_RECENTS,
+      ACT_EXIT
+  };
 
-    BrowserController();
+  BrowserController();
 
-    bool OpenDir(const char* path);
-    void SelectEntryByName(const char* name);
-    void SetModes(bool loopEnabled, int randomMode);
-    Action Update();
-    void GetSelectedPath(char* out, size_t outMax) const;
-    const char* GetCurDir() const
-    {
-        return _curDir;
+  bool OpenDir(const char *path);
+  void SelectEntryByName(const char *name);
+  void SetModes(bool loopEnabled, int randomMode);
+  Action Update();
+  void GetSelectedPath(char *out, size_t outMax) const;
+  const char *GetCurDir() const
+  {
+      return _curDir;
     }
 
 private:
-    void MoveCursor(int delta);
-    void RenderIfNeeded();
+  bool Page(int direction);
+  void MoveCursor(int delta);
+  void RenderIfNeeded();
 
-    BrowserView _view;
-    PadInputProvider _inputProvider;
-    InputRepeater _inputRepeater;
+  BrowserView _view;
+  PadInputProvider _inputProvider;
+  InputRepeater _inputRepeater;
 
-    char _curDir[FV_MAX_PATH_LEN];
-    const fv_dir_entry_t* _entries;
-    u32 _count;
-    u32 _total;
-    u32 _cursor;
-    u32 _topLine;
-    bool _dirty;
-    bool _loopEnabled;
-    int _randomMode;
+  char _curDir[FV_MAX_PATH_LEN];
+  const fv_dir_entry_t *_entries;
+  u32 _pageStart;
+  u32 _count;
+  u32 _total;
+  u32 _cursor;
+  u32 _topLine;
+  bool _dirty;
+  bool _loopEnabled;
+  int _randomMode;
 };

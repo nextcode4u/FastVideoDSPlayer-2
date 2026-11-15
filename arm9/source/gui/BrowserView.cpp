@@ -2,69 +2,12 @@
 #include <stdio.h>
 #include <string.h>
 #include "BrowserView.h"
+#include "../Preferences.h"
+#include "../MediaText.h"
 
-// latin-1 codepoint -> closest ASCII, for display only
-static char Transliterate(unsigned char c)
+static void MakeDisplayName(const char *name, char *out, size_t capacity)
 {
-    if (c < 0x80)
-        return (char)c;
-    switch (c)
-    {
-        case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5:
-        case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5:
-            return 'a';
-        case 0xC7: case 0xE7:
-            return 'c';
-        case 0xC8: case 0xC9: case 0xCA: case 0xCB:
-        case 0xE8: case 0xE9: case 0xEA: case 0xEB:
-            return 'e';
-        case 0xCC: case 0xCD: case 0xCE: case 0xCF:
-        case 0xEC: case 0xED: case 0xEE: case 0xEF:
-            return 'i';
-        case 0xD1: case 0xF1:
-            return 'n';
-        case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6:
-        case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6:
-            return 'o';
-        case 0xD9: case 0xDA: case 0xDB: case 0xDC:
-        case 0xF9: case 0xFA: case 0xFB: case 0xFC:
-            return 'u';
-        case 0xDD: case 0xFD: case 0xFF:
-            return 'y';
-        default:
-            return '?';
-    }
-}
-
-// decodes UTF-8 (ASCII + 2/3/4-byte sequences) and transliterates
-static void MakeDisplayName(const char* name, char* out, size_t outMax)
-{
-    size_t o = 0;
-    while (*name && o < outMax - 1)
-    {
-        unsigned char c = (unsigned char)*name;
-        if ((c & 0xE0) == 0xC0 && (name[1] & 0xC0) == 0x80)
-        {
-            out[o++] = Transliterate((unsigned char)(((c & 0x1F) << 6) | (name[1] & 0x3F)));
-            name += 2;
-        }
-        else if ((c & 0xF0) == 0xE0 && (name[1] & 0xC0) == 0x80 && (name[2] & 0xC0) == 0x80)
-        {
-            out[o++] = '?'; // 3-byte sequence: no latin-1 equivalent
-            name += 3;
-        }
-        else if ((c & 0xF8) == 0xF0 && (name[1] & 0xC0) == 0x80 && (name[2] & 0xC0) == 0x80 && (name[3] & 0xC0) == 0x80)
-        {
-            out[o++] = '?'; // 4-byte sequence (emoji, non-latin): same
-            name += 4;
-        }
-        else
-        {
-            out[o++] = Transliterate(c);
-            name++;
-        }
-    }
-    out[o] = 0;
+    MediaText::DisplayText(name, strlen(name), out, capacity);
 }
 
 void BrowserView::Initialize()
@@ -89,9 +32,10 @@ void BrowserView::Render(const char* dirPath, const fv_dir_entry_t* entries, u32
     char disp[FV_MAX_PATH_LEN];
 
     consoleClear();
+    iprintf("\x1b[37m");
 
     MakeDisplayName(dirPath, disp, sizeof(disp));
-    iprintf("\x1b[0;0H\x1b[33m%.32s\x1b[0m", disp);
+    iprintf("\x1b[0;0H\x1b[33m%.32s\x1b[37m", disp);
 
     for (int i = 0; i < BROWSER_VISIBLE_LINES; i++)
     {
@@ -103,7 +47,7 @@ void BrowserView::Render(const char* dirPath, const fv_dir_entry_t* entries, u32
             MakeDisplayName(entries[idx].name, line, sizeof(line));
             char suffix = entries[idx].isDir ? '/' : ' ';
             if (idx == cursor)
-                iprintf("\x1b[47;30m>%-30s%c\x1b[0m", line, suffix);
+                iprintf("\x1b[36;1m>%-30s%c\x1b[37m", line, suffix);
             else
                 iprintf(" %-30s%c", line, suffix);
         }
@@ -111,13 +55,17 @@ void BrowserView::Render(const char* dirPath, const fv_dir_entry_t* entries, u32
 
     iprintf("\x1b[12;0H");
     if (count == 0)
-        iprintf("(dossier vide)");
+        iprintf("%s", Preferences::Text("(empty folder)", "(dossier vide)"));
     else if (total > count)
-        iprintf("(%lu/%lu entrees, liste tronquee)", (unsigned long)count, (unsigned long)total);
+        iprintf(Preferences::Text("%lu / %lu entries; L/R: page", "%lu / %lu entrees; L/R: page"),
+                (unsigned long)count, (unsigned long)total);
     else
-        iprintf("%lu entree(s)", (unsigned long)total);
+        iprintf(Preferences::Text("%lu entries", "%lu entrees"), (unsigned long)total);
 
     // SUPPRESSION DE LA LIGNE 22 (ALEA / BOUCLE)
     // MODIFICATION DE LA LIGNE 23 (Aide)
-    iprintf("\x1b[23;0H\x1b[36mA:OUVRIR B:RETOUR\x1b[0m");
+    iprintf("\x1b[20;0H%s\n%s\n%s",
+            Preferences::Text("A: open  B: back  L/R: page", "A: ouvrir B: retour L/R: page"),
+            Preferences::Text("START: options SELECT: recent", "START: options SELECT: recents"),
+            Preferences::Text(".fv videos / .m3u playlists", "Videos .fv / listes .m3u"));
 }

@@ -6,6 +6,8 @@
 #include "../../common/ipc.h"
 #include "fat.h"
 #include "fileService.h"
+#include "directoryService.h"
+#include "../../common/fvNames.h"
 #include "adpcm.h"
 #include "irqWait.h"
 #include "../../common/twlwram.h"
@@ -294,60 +296,18 @@ static bool hasFvExtension(const char *name)
     return len > 3 && strcasecmp(name + len - 3, ".fv") == 0;
 }
 
-// Lists a directory for the standalone browser: fills req->entries with up
-// to req->maxEntries entries (directories and .fv files only, dotfiles
-// skipped). Returns 1 if the directory could be opened, 0 otherwise.
-// Sorting is done on the arm9 side (qsort), the arm7 only fills the buffer.
-static u32 listDirInto(fv_listdir_req_t* req)
-{
-    DIR dir;
-    FILINFO info;
-
-    req->count = 0;
-    req->total = 0;
-
-    if (f_opendir(&dir, req->path) != FR_OK)
-        return 0;
-
-    while (f_readdir(&dir, &info) == FR_OK && info.fname[0] != 0)
-    {
-        int isDir = (info.fattrib & AM_DIR) != 0;
-        if (info.fname[0] == '.')
-            continue;
-        if (!isDir && !hasFvExtension(info.fname))
-            continue;
-
-        req->total++;
-        if (req->count < req->maxEntries)
-        {
-            strncpy(req->entries[req->count].name, info.fname, FV_BROWSER_NAME_LEN - 1);
-            req->entries[req->count].name[FV_BROWSER_NAME_LEN - 1] = 0;
-            req->entries[req->count].isDir = isDir ? 1 : 0;
-            req->count++;
-        }
-    }
-    f_closedir(&dir);
-    return 1;
-}
-
 static void joinCurDirAndName(const char *name, char *outPath)
 {
-    if (sPlayer.curDir[0]) {
-        size_t dirLen = strlen(sPlayer.curDir);
-        if (dirLen > FV_MAX_PATH_LEN - 2)
-            dirLen = FV_MAX_PATH_LEN - 2;
-        memcpy(outPath, sPlayer.curDir, dirLen);
-        outPath[dirLen] = '/';
-        size_t avail = FV_MAX_PATH_LEN - dirLen - 2;
-        size_t nameLen = strlen(name);
-        if (nameLen > avail)
-            nameLen = avail;
-        memcpy(outPath + dirLen + 1, name, nameLen);
-        outPath[dirLen + 1 + nameLen] = 0;
-    } else {
-        strncpy(outPath, name, FV_MAX_PATH_LEN - 1);
-        outPath[FV_MAX_PATH_LEN - 1] = 0;
+    outPath[0] = 0;
+    size_t base = strlen(sPlayer.curDir), length = strlen(name);
+    if (base + length + 2 > FV_MAX_PATH_LEN)
+        return;
+    if (base)
+    {
+        memcpy(outPath, sPlayer.curDir, base);
+        outPath[base++] = '/';
     }
+    memcpy(outPath + base, name, length + 1);
 }
 
 static bool findAdjacentFvFile(int direction, char *outPath)
@@ -366,25 +326,29 @@ static bool findAdjacentFvFile(int direction, char *outPath)
             continue;
         if (!hasFvExtension(info.fname))
             continue;
-        int cmpToCur = strcasecmp(info.fname, sPlayer.curName);
+        int cmpToCur = fv_naturalCompare(info.fname, sPlayer.curName);
         if (direction > 0) {
-            if (cmpToCur > 0 && (!haveBest || strcasecmp(info.fname, best) < 0)) {
+            if (cmpToCur > 0 && (!haveBest || fv_naturalCompare(info.fname, best) < 0))
+            {
                 strncpy(best, info.fname, sizeof(best) - 1);
                 best[sizeof(best) - 1] = 0;
                 haveBest = true;
             }
-            if (!haveEdge || strcasecmp(info.fname, edge) < 0) {
+            if (!haveEdge || fv_naturalCompare(info.fname, edge) < 0)
+            {
                 strncpy(edge, info.fname, sizeof(edge) - 1);
                 edge[sizeof(edge) - 1] = 0;
                 haveEdge = true;
             }
         } else {
-            if (cmpToCur < 0 && (!haveBest || strcasecmp(info.fname, best) > 0)) {
+            if (cmpToCur < 0 && (!haveBest || fv_naturalCompare(info.fname, best) > 0))
+            {
                 strncpy(best, info.fname, sizeof(best) - 1);
                 best[sizeof(best) - 1] = 0;
                 haveBest = true;
             }
-            if (!haveEdge || strcasecmp(info.fname, edge) > 0) {
+            if (!haveEdge || fv_naturalCompare(info.fname, edge) > 0)
+            {
                 strncpy(edge, info.fname, sizeof(edge) - 1);
                 edge[sizeof(edge) - 1] = 0;
                 haveEdge = true;
@@ -396,7 +360,7 @@ static bool findAdjacentFvFile(int direction, char *outPath)
     if (!chosen || strcasecmp(chosen, sPlayer.curName) == 0)
         return false;
     joinCurDirAndName(chosen, outPath);
-    return true;
+    return outPath[0] != 0;
 }
 
 static u32 hash32(u32 x)
@@ -427,7 +391,8 @@ static void buildShuffleBag(void)
         if (info.fattrib & AM_DIR) continue;
         if (!hasFvExtension(info.fname)) continue;
         // EXCLUSION CRITIQUE : empêche la dernière vidéo lue d'être dans le nouveau bag
-        if (strcasecmp(info.fname, sPlayer.curName) == 0) continue;
+        if (fv_naturalCompare(info.fname, sPlayer.curName) == 0)
+            continue;
         count++;
     }
     f_closedir(&dir);
@@ -508,13 +473,13 @@ static bool findRandomFvFile(char *outPath)
 static void handleFindFile(u32 value)
 {
     switch (value >> IPC_CMD_CMD_SHIFT) {
-        case IPC_CMD_FILE_SERVICE:
-        {
-            fv_file_request_t *request = (fv_file_request_t *)(value & IPC_CMD_ARG_MASK);
-            fv_fileService(request);
-            fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_FILE_SERVICE, request->result));
-            break;
-        }
+    case IPC_CMD_FILE_SERVICE:
+    {
+        fv_file_request_t *request = (fv_file_request_t *)(value & IPC_CMD_ARG_MASK);
+        fv_fileService(request);
+        fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_FILE_SERVICE, request->result));
+        break;
+    }
         case IPC_CMD_FIND_NEXT_FILE: {
             char *outPath = (char *)(value & IPC_CMD_ARG_MASK);
             bool found = findAdjacentFvFile(1, outPath);
@@ -536,7 +501,7 @@ static void handleFindFile(u32 value)
         case IPC_CMD_LIST_DIR:
         {
             fv_listdir_req_t* req = (fv_listdir_req_t*)(value & IPC_CMD_ARG_MASK);
-            u32 ok = listDirInto(req);
+            u32 ok = fv_listDirectory(req, updateAudio);
             fifoSendValue32(FIFO_USER_02, IPC_CMD_PACK(IPC_CMD_LIST_DIR, ok));
             break;
         }

@@ -5,8 +5,10 @@
 #include <string.h>
 #include <strings.h>
 #include "BrowserController.h"
+#include "../Preferences.h"
+#include "../../../common/fvNames.h"
 
-#define BROWSER_MAX_ENTRIES 512
+#define BROWSER_MAX_ENTRIES 64
 
 static bool IsRootDir(const char* path)
 {
@@ -27,13 +29,18 @@ static int CompareEntries(const void* a, const void* b)
     const fv_dir_entry_t* eb = (const fv_dir_entry_t*)b;
     if (ea->isDir != eb->isDir)
         return (int)eb->isDir - (int)ea->isDir;
-    return strcasecmp(ea->name, eb->name);
+    return fv_naturalCompare(ea->name, eb->name);
 }
 
 // synchronous directory listing via the arm7 (same pattern as the
 // FIND_NEXT/PREV/RANDOM commands on FIFO_USER_02)
-static bool RequestListDir(const char* path)
+static bool RequestListDir(const char *path, int direction = 0, const fv_dir_entry_t *boundary = 0)
 {
+    if (strlen(path) >= FV_MAX_PATH_LEN)
+        return false;
+    sListReq.direction = direction;
+    if (boundary)
+        sListReq.boundary = *boundary;
     strncpy(sListReq.path, path, FV_MAX_PATH_LEN - 1);
     sListReq.path[FV_MAX_PATH_LEN - 1] = 0;
     sListReq.entries = sEntries;
@@ -53,15 +60,16 @@ static bool RequestListDir(const char* path)
     DC_InvalidateRange(&sListReq, sizeof(sListReq));
     DC_InvalidateRange(sEntries, sizeof(fv_dir_entry_t) * sListReq.count);
 
+    if (sListReq.count > BROWSER_MAX_ENTRIES)
+        return false;
     if (sListReq.count > 1)
         qsort(sEntries, sListReq.count, sizeof(fv_dir_entry_t), CompareEntries);
     return true;
 }
 
 BrowserController::BrowserController()
-    : _inputRepeater(KEY_UP | KEY_DOWN, 12, 3),
-      _entries(sEntries), _count(0), _total(0), _cursor(0), _topLine(0), _dirty(true),
-      _loopEnabled(false), _randomMode(0)
+    : _inputRepeater(KEY_UP | KEY_DOWN, 12, 3), _entries(sEntries), _pageStart(0), _count(0), _total(0),
+      _cursor(0), _topLine(0), _dirty(true), _loopEnabled(false), _randomMode(0)
 {
     _view.Initialize();
     _curDir[0] = 0;
@@ -82,13 +90,43 @@ void BrowserController::SetModes(bool loopEnabled, int randomMode)
     RenderIfNeeded();
 }
 
+bool BrowserController::Page(int direction)
+{
+    if (!_count)
+        return false;
+    if (direction > 0 && _pageStart + _count >= _total)
+        return false;
+    if (direction < 0 && !_pageStart)
+        return false;
+    unsigned oldCount = _count;
+    fv_dir_entry_t boundary = _entries[direction > 0 ? _count - 1 : 0];
+    if (!RequestListDir(_curDir, direction, &boundary) || !sListReq.count)
+    {
+        RequestListDir(_curDir, direction > 0 ? -1 : 1, &boundary);
+        // Keep navigation consistent if the directory changed during paging.
+        return OpenDir(_curDir);
+    }
+    _pageStart = direction > 0 ? _pageStart + oldCount
+                               : (_pageStart > sListReq.count ? _pageStart - sListReq.count : 0);
+    _count = sListReq.count;
+    _total = sListReq.total;
+    _cursor = direction > 0 ? 0 : _count - 1;
+    _topLine = _cursor >= BROWSER_VISIBLE_LINES ? _cursor - BROWSER_VISIBLE_LINES + 1 : 0;
+    _dirty = true;
+    return true;
+}
+
 bool BrowserController::OpenDir(const char* path)
 {
+    _view.Initialize();
+    _inputProvider.PrimeCurrentState();
     if (!RequestListDir(path))
         return false;
 
-    strncpy(_curDir, path, FV_MAX_PATH_LEN - 1);
+    if (path != _curDir)
+        strncpy(_curDir, path, FV_MAX_PATH_LEN - 1);
     _curDir[FV_MAX_PATH_LEN - 1] = 0;
+    _pageStart = 0;
     _count = sListReq.count;
     _total = sListReq.total;
     _cursor = 0;
@@ -123,6 +161,16 @@ void BrowserController::MoveCursor(int delta)
 {
     if (_count == 0)
         return;
+    if (delta > 0 && _cursor == _count - 1 && _total > _count)
+    {
+        Page(1);
+        return;
+    }
+    if (delta < 0 && _cursor == 0 && _total > _count)
+    {
+        Page(-1);
+        return;
+    }
     int cur = (int)_cursor + delta;
     if (cur < 0)
         cur = 0;
@@ -168,11 +216,11 @@ BrowserController::Action BrowserController::Update()
             action = _entries[_cursor].isDir ? ACT_OPEN_DIR : ACT_PLAY;
     }
     else if (_inputProvider.Triggered(KEY_B))
-        action = IsRootDir(_curDir) ? ACT_EXIT : ACT_PARENT;
+        action = IsRootDir(_curDir) || !strcmp(_curDir, Preferences::videoRoot) ? ACT_EXIT : ACT_PARENT;
     else if (_inputProvider.Triggered(KEY_START))
-        action = ACT_TOGGLE_LOOP;
+        action = ACT_SETTINGS;
     else if (_inputProvider.Triggered(KEY_SELECT))
-        action = ACT_TOGGLE_RANDOM;
+        action = ACT_RECENTS;
 
     // touch: tapping a visible line selects and opens it
     if (action == ACT_NONE && _inputProvider.Triggered(KEY_TOUCH))
@@ -209,6 +257,11 @@ void BrowserController::GetSelectedPath(char* out, size_t outMax) const
         return;
     }
 
+    if (strlen(_curDir) + strlen(_entries[_cursor].name) + 2 > outMax)
+    {
+        out[0] = 0;
+        return;
+    }
     strncpy(out, _curDir, outMax - 1);
     out[outMax - 1] = 0;
     size_t len = strlen(out);
