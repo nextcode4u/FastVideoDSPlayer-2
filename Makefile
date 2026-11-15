@@ -20,12 +20,13 @@ GAME_ICON := icon.bmp
 
 include $(DEVKITARM)/ds_rules
 
-.PHONY: checkarm7 checkarm9 clean
+.PHONY: all checkarm7 checkarm9 clean
 
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
-all: checkarm7 checkarm9 $(TARGET).nds
+# Package only after both recursive builds finish, including incremental -j builds.
+all: $(TARGET).nds
 
 #---------------------------------------------------------------------------------
 checkarm7:
@@ -42,12 +43,10 @@ $(TARGET).nds	: $(NITRO_FILES) arm7/$(TARGET).elf arm9/$(TARGET).elf
 	$(_ADDFILES)
 
 #---------------------------------------------------------------------------------
-arm7/$(TARGET).elf:
-	$(MAKE) -C arm7
+arm7/$(TARGET).elf: checkarm7 ;
 	
 #---------------------------------------------------------------------------------
-arm9/$(TARGET).elf:
-	$(MAKE) -C arm9
+arm9/$(TARGET).elf: checkarm9 ;
 
 #---------------------------------------------------------------------------------
 clean:
