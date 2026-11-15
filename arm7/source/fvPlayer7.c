@@ -48,6 +48,7 @@ static u32 sAudioBase, sUnderruns;
 static volatile u32 sAudioFilled, sAudioBlocks;
 static volatile u16 sLastAudioBlocks;
 static bool sAudioPaused, sBuffering;
+static volatile bool sAudioDrained;
 static unsigned sVolume = 127;
 static bool sMute, sMono;
 static s16 sPcmLeft[FV_AUDIO_FRAME_SAMPLES], sPcmRight[FV_AUDIO_FRAME_SAMPLES];
@@ -70,6 +71,7 @@ static void audioFrameIrq(void)
     // Silence a drained ring even if foreground SD I/O is still blocked.
     u32 blocks = sAudioBlocks + (u16)(TIMER_DATA(3) - sLastAudioBlocks);
     if (blocks * FV_AUDIO_FRAME_SAMPLES >= sAudioFilled) {
+        sAudioDrained = true;
         SCHANNEL_CR(FV_AUDIO_CH_LEFT) &= ~127u;
         SCHANNEL_CR(FV_AUDIO_CH_RIGHT) &= ~127u;
     }
@@ -140,6 +142,7 @@ static void startAudio(void)
     if (!sAudioFilled) { sBuffering = true; publishAudio(); return; }
     sAudioBlocks = 0;
     sLastAudioBlocks = 0;
+    sAudioDrained = false;
     int tmr = getAudioTimerValue(FV_AUDIO_RATE);
     SCHANNEL_SOURCE(FV_AUDIO_CH_LEFT) = (u32)sPlayer.audioRingL;
     SCHANNEL_REPEAT_POINT(FV_AUDIO_CH_LEFT) = 0;
@@ -182,7 +185,7 @@ static void updateAudio(void)
 {
     if (sPlayer.audioStarted) {
         u32 position = audioPosition();
-        if (position > sAudioFilled) {
+        if (sAudioDrained || position > sAudioFilled) {
             // Preserve only valid samples; never replay a stale ring on slow SD.
             preserveAudio();
             ++sUnderruns;
