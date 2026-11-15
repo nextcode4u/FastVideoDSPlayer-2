@@ -113,15 +113,7 @@ static void UpdateOverlay()
         return;
     sOverlayTick = now;
     using namespace Preferences;
-    char state[64], caption[129] = {}, diagnostic[64] = {};
-    unsigned elapsed = (u64)sPlayer.curFrame * sPlayer.fvHeader->fpsDen / sPlayer.fvHeader->fpsNum;
-    unsigned total = (u64)sPlayer.fvHeader->nrFrames * sPlayer.fvHeader->fpsDen / sPlayer.fvHeader->fpsNum;
-    unsigned remaining = elapsed < total ? total - elapsed : 0;
-    snprintf(state, sizeof(state), Text("Vol %d%s  -%02u:%02u  %s", "Vol %d%s  -%02u:%02u  %s"),
-             values[Volume], values[Mute] ? " M" : "", remaining / 60, remaining % 60,
-             values[Repeat]    ? Text("Repeat", "Boucle")
-             : values[Shuffle] ? Text("Shuffle", "Aleat.")
-                               : "");
+    char caption[129] = {}, diagnostic[64] = {};
     int64_t time = (u64)sPlayer.curFrame * sPlayer.fvHeader->fpsDen * 1000 / sPlayer.fvHeader->fpsNum;
     time -= values[SubtitleDelay];
     int cue = values[Subtitles] && time >= 0 ? MediaText::ActiveCue(sCues, sCueCount, (uint32_t)time) : -1;
@@ -135,7 +127,7 @@ static void UpdateOverlay()
     else if (audio.flags & FV_AUDIO_BUFFERING)
         snprintf(diagnostic, sizeof(diagnostic), "%s", Text("Buffering...", "Chargement..."));
     const char *name = strrchr(sCurPath, '/');
-    sPlayerController->SetDetails(name ? name + 1 : sCurPath, state, caption, diagnostic);
+    sPlayerController->SetDetails(name ? name + 1 : sCurPath, caption, diagnostic);
 }
 static bool PickRecent(char *out)
 {
@@ -206,25 +198,13 @@ static void ShowVideoMessage()
     if (!sPlayerController)
         return;
 
-    char displayName[64];
-    strncpy(displayName, GetFileName(sCurPath), sizeof(displayName) - 1);
-    displayName[sizeof(displayName) - 1] = 0;
-    size_t len = strlen(displayName);
-    if (len > 3 && strcasecmp(displayName + len - 3, ".fv") == 0)
-        displayName[len - 3] = 0;
-
-    char line2[32];
-    const char* randomStateStr;
-    // "ALL" et non "ON ALL" : les 3 états doivent tenir sur 3 caractères
-    // pour que le pire cas ("ALEA:xxx  BOUCLE:OFF") reste <= MAX_MSG_CHARS
-    // (20, voir PlayerView.h) et ne soit pas tronqué par RenderTextLine.
-    if (sRandomMode == 2) randomStateStr = "ALL";
-    else if (sRandomMode == 1) randomStateStr = "ON ";
-    else randomStateStr = "OFF";
-
-    snprintf(line2, sizeof(line2), Preferences::Text("Shuffle:%s Loop:%s", "Aleat:%s Boucle:%s"),
-             randomStateStr, sLoopEnabled ? "ON" : "OFF");
-    sPlayerController->ShowMessage(displayName, line2);
+    using Preferences::Text;
+    char modes[80];
+    const char *shuffle = sRandomMode == 2 ? Text("library", "bibliotheque")
+                         : sRandomMode ? Text("folder", "dossier") : Text("off", "non");
+    snprintf(modes, sizeof(modes), "%s: %s / %s: %s", Text("Repeat", "Boucle"),
+             sLoopEnabled ? Text("on", "oui") : Text("off", "non"), Text("Shuffle", "Aleat."), shuffle);
+    sPlayerController->ShowMessage(modes, "");
 }
 
 static char sLoadCandidate[FV_MAX_PATH_LEN]; // buffer static de transit vers fv_initPlayer, voir commentaire ci-dessous

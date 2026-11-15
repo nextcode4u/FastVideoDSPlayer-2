@@ -14,6 +14,13 @@ c++ -std=c++11 "${flags[@]}" -Wno-reorder -Itests/host tests/controller.cpp \
 c++ -std=c++11 "${flags[@]}" tests/media.cpp arm9/source/MediaText.cpp \
     arm9/source/Preferences.cpp arm9/source/LibraryState.cpp -o tmp/media-test
 ./tmp/media-test
+# Render with the shipped proportional fonts and a bounded VRAM substitute.
+python3 tests/font-fixture.py
+c++ -std=c++11 "${flags[@]}" -Itests/graphics -Itmp/graphics-fonts tests/graphics.cpp \
+    arm9/source/gui/UiCanvas.cpp arm9/source/gui/PlayerView.cpp \
+    arm9/source/gui/core/NtftFont.cpp arm9/source/Preferences.cpp \
+    arm9/source/MediaText.cpp tmp/graphics-fonts/fonts.cpp -o tmp/graphics-test
+./tmp/graphics-test
 # A disposable image exercises the same FatFs code used on the console.
 image=$(mktemp tmp/fatfs-XXXXXX.img)
 trap 'rm -f "$image"' EXIT
@@ -23,4 +30,4 @@ cc -std=c99 "${flags[@]}" -Wno-unused-function -Dsniprintf=snprintf -Itests/host
     tests/storage.c arm7/source/fileService.c arm7/source/directoryService.c \
     arm7/source/fat/ff.c arm7/source/fat/ffunicode.c -o tmp/storage-test
 ./tmp/storage-test "$image"
-printf 'Host checks passed: display, validation, audio, controller, text/state, FAT storage/paging.\n'
+printf 'Host checks passed: display, validation, audio, controller, text/state, graphics, FAT storage/paging.\n'

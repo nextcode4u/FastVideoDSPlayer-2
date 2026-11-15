@@ -1,424 +1,225 @@
 #include <nds.h>
 #include <stdio.h>
-#include "RobotoRegular10_ntft.h"
-#include "playBg.h"
-#include "iconPlay.h"
-#include "iconPause.h"
-#include "circle0.h"
-#include "circle1.h"
-#include "core/uiUtil.h"
+#include <stdlib.h>
+#include <string.h>
+#include <initializer_list>
 #include "PlayerView.h"
-#include "ControlSurface.h"
-#include "PlayerControls.h"
+#include "UiCanvas.h"
 #include "../Preferences.h"
 #include "../MediaText.h"
 extern u32 GetDebounceTicks();
 
-PlayerView::PlayerView() : _robotoRegular10(RobotoRegular10_ntft)
-{
-}
-
-static unsigned char DecodeNextChar(const char** text)
-{
-    unsigned char c = (unsigned char)**text;
-    if (c == 0)
-        return 0;
-    if ((c & 0xE0) == 0xC0 && ((*text)[1] & 0xC0) == 0x80)
-    {
-        unsigned char c2 = (unsigned char)(*text)[1];
-        *text += 2;
-        return (unsigned char)(((c & 0x1F) << 6) | (c2 & 0x3F));
-    }
-    if ((c & 0xF0) == 0xE0 && ((*text)[1] & 0xC0) == 0x80 && ((*text)[2] & 0xC0) == 0x80)
-    {
-        *text += 3;
-        return '?';
-    }
-    if ((c & 0xF8) == 0xF0 && ((*text)[1] & 0xC0) == 0x80 && ((*text)[2] & 0xC0) == 0x80 && ((*text)[3] & 0xC0) == 0x80)
-    {
-        *text += 4;
-        return '?';
-    }
-    (*text)++;
-    return c;
-}
-
-static const int SUB_SPRITE_VRAM_SIZE = 16 * 1024;
-
-int PlayerView::RenderTextLine(const char* text, u16* tileAddr, int maxChars)
-{
-    int n = 0;
-    unsigned char c;
-    while (n < maxChars && (c = DecodeNextChar(&text)) != 0)
-    {
-        if ((int)_subObj.GetState() + CHAR_CELL_W * CHAR_CELL_H / 2 > SUB_SPRITE_VRAM_SIZE)
-            break;
-
-        char single[2] = { (char)c, 0 };
-        memset(_textTmpBuf, 0, sizeof(_textTmpBuf));
-        _robotoRegular10.CreateStringData(single, _textTmpBuf, CHAR_CELL_W);
-        u16 addr = _subObj.Alloc(CHAR_CELL_W * CHAR_CELL_H / 2) >> 5;
-        uiutil_convertToObj(_textTmpBuf, CHAR_CELL_W, CHAR_CELL_H, CHAR_CELL_W, &SPRITE_GFX_SUB[addr << 4]);
-        tileAddr[n] = addr;
-        n++;
-    }
-    return n;
-}
-
-int PlayerView::PlaceTextLine(SpriteEntry* oams, const u16* tileAddr, int len, int x, int y, int palette)
-{
-    for (int i = 0; i < len; i++)
-    {
-        oams[i].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_SQUARE | y;
-        oams[i].attribute[1] = ATTR1_SIZE_16 | (x + i * CHAR_ADVANCE_W);
-        oams[i].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(palette) | tileAddr[i];
-    }
-    return len;
-}
-
+PlayerView::PlayerView() {}
 void PlayerView::Initialize()
 {
-    _subObj.SetState(0);
-    _subOam.Clear();
-    memset(_lastLines, 0xff, sizeof(_lastLines));
-    _title[0] = _state[0] = _caption[0] = _diagnostics[0] = 0;
-    decompress(playBgTiles, BG_GFX_SUB, LZ77Vram);
-    decompress(playBgMap, (u8*)BG_GFX_SUB + 0x800, LZ77Vram);
-    dmaCopyWords(3, playBgPal, BG_PALETTE_SUB, playBgPalLen);
-
-    _subOam.Apply(OAM_SUB);
-
-    REG_DISPCNT_SUB = DISPLAY_BG0_ACTIVE | DISPLAY_BG1_ACTIVE | DISPLAY_BG2_ACTIVE | DISPLAY_SPR_ACTIVE |
-                      DISPLAY_SPR_1D | DISPLAY_SPR_1D_SIZE_32 | MODE_0_2D | DISPLAY_WIN0_ON;
-
-    REG_BG2CNT_SUB &= ~BG_PRIORITY_3;
-
-    REG_BG0CNT_SUB = BG_32x32 | BG_PRIORITY_2 | BG_COLOR_16 | BG_MAP_BASE(1) | BG_TILE_BASE(0);
-    REG_BG0HOFS_SUB = 0;
-    REG_BG0VOFS_SUB = 0;
-
-    REG_BG1CNT_SUB = BG_32x32 | BG_PRIORITY_1 | BG_COLOR_16 | BG_MAP_BASE(1) | BG_TILE_BASE(0);
-    REG_BG1HOFS_SUB = 0;
-    REG_BG1VOFS_SUB = -176;
-
-    SUB_WIN0_X0 = 16;
-    SUB_WIN0_X1 = 128;
-    SUB_WIN0_Y0 = 117;
-    SUB_WIN0_Y1 = 117 + 4;
-
-    SUB_WIN_IN = 0x16;
-    SUB_WIN_OUT = 0x15;
-
-    for (int i = 0; i < 16; i++)
-    {
-        int rnew = 4 + ((31 - 4) * i) / 15;
-        int gnew = 6 + ((31 - 6) * i) / 15;
-        int bnew = 8 + ((31 - 8) * i) / 15;
-        SPRITE_PALETTE_SUB[16 + i] = RGB5(rnew, gnew, bnew);
-    }
-
-    for (int i = 0; i < 16; i++)
-    {
-        int rnew = 6 + ((31 - 6) * i) / 15;
-        int gnew = 8 + ((31 - 8) * i) / 15;
-        int bnew = 11 + ((31 - 11) * i) / 15;
-        SPRITE_PALETTE_SUB[32 + i] = RGB5(rnew, gnew, bnew);
-    }
-
-    for (int i = 0; i < 16; i++)
-    {
-        int rnew = 4 + ((6 - 4) * i) / 15;
-        int gnew = 6 + ((8 - 6) * i) / 15;
-        int bnew = 8 + ((11 - 8) * i) / 15;
-        SPRITE_PALETTE_SUB[48 + i] = RGB5(rnew, gnew, bnew);
-    }
-
-    _twoDigitObjAddr = _subObj.Alloc(60 * 2 * 32) >> 5;
-    char twoDigitStr[3];
-    for (int i = 0; i < 60; i++)
-    {
-        memset(_textTmpBuf, 0, sizeof(_textTmpBuf));
-        twoDigitStr[0] = '0' + ((u32)i / 10);
-        twoDigitStr[1] = '0' + ((u32)i % 10);
-        twoDigitStr[2] = 0;
-        int w, h;
-        _robotoRegular10.MeasureString(twoDigitStr, w, h);
-        const ntft_cinfo_char_t* charInfo = _robotoRegular10.GetCharInfo(twoDigitStr[0]);
-        _twoDigitOffset[i] = charInfo->characterBeginOffset < 0 ? charInfo->characterBeginOffset : 0;
-        charInfo = _robotoRegular10.GetCharInfo(twoDigitStr[1]);
-        _twoDigitWidth[i] = w;
-        _twoDigitEndOffset[i] = charInfo->characterEndOffset;
-        _robotoRegular10.CreateStringData(twoDigitStr, _textTmpBuf, 16);
-        uiutil_convertToObj(_textTmpBuf + 2 * 16, 16, 8, 16, &SPRITE_GFX_SUB[(_twoDigitObjAddr + 2 * i) << 4]);
-    }
-
-    _oneDigitObjAddr = _subObj.Alloc(10 * 32) >> 5;
-    for (int i = 0; i < 10; i++)
-    {
-        memset(_textTmpBuf, 0, sizeof(_textTmpBuf));
-        twoDigitStr[0] = '0' + i;
-        twoDigitStr[1] = 0;
-        int w, h;
-        _robotoRegular10.MeasureString(twoDigitStr, w, h);
-        const ntft_cinfo_char_t* charInfo = _robotoRegular10.GetCharInfo(twoDigitStr[0]);
-        _oneDigitOffset[i] = charInfo->characterBeginOffset < 0 ? charInfo->characterBeginOffset : 0;
-        _oneDigitWidth[i] = w;
-        _oneDigitEndOffset[i] = charInfo->characterEndOffset;
-        _robotoRegular10.CreateStringData(twoDigitStr, _textTmpBuf, 8);
-        uiutil_convertToObj(_textTmpBuf + 2 * 8, 8, 8, 8, &SPRITE_GFX_SUB[(_oneDigitObjAddr + i) << 4]);
-    }
-
-    _colonObjAddr = _subObj.Alloc(32) >> 5;
-    memset(_textTmpBuf, 0, sizeof(_textTmpBuf));
-    twoDigitStr[0] = ':';
-    twoDigitStr[1] = 0;
-    int w, h;
-    _robotoRegular10.MeasureString(twoDigitStr, w, h);
-    const ntft_cinfo_char_t* charInfo = _robotoRegular10.GetCharInfo(twoDigitStr[0]);
-    _colonOffset = charInfo->characterBeginOffset < 0 ? charInfo->characterBeginOffset : 0;
-    _colonWidth = w + charInfo->characterEndOffset;
-    _robotoRegular10.CreateStringData(twoDigitStr, _textTmpBuf, 8);
-    uiutil_convertToObj(_textTmpBuf + 2 * 8, 8, 8, 8, &SPRITE_GFX_SUB[_colonObjAddr << 4]);
-
-    SetTotalTime(3 * 60 * 60 + 48 * 60 + 59);
-    SetCurrentTime(0 * 60 * 60 + 16 * 60 + 27);
-
-    _circleObjAddr = _subObj.Alloc(32 * 20) >> 5;
-    dmaCopyWords(3, circle0Tiles, &SPRITE_GFX_SUB[_circleObjAddr << 4], circle0TilesLen);
-    dmaCopyWords(3, circle1Tiles, &SPRITE_GFX_SUB[(_circleObjAddr + 16) << 4], circle1TilesLen);
-
-    _playIconObjAddr = _subObj.Alloc(32 * 4) >> 5;
-    dmaCopyWords(3, iconPlayTiles, &SPRITE_GFX_SUB[_playIconObjAddr << 4], iconPlayTilesLen);
-    _pauseIconObjAddr = _subObj.Alloc(32 * 4) >> 5;
-    dmaCopyWords(3, iconPauseTiles, &SPRITE_GFX_SUB[_pauseIconObjAddr << 4], iconPauseTilesLen);
-
-    _playing = false;
-
-    _legendLine1Len = _legendLine2Len = 0;
-    consoleInit(NULL, 2, BgType_Text4bpp, BgSize_T_256x256, 2, 1, false, true);
-    consoleClear();
-    // Font setup replaces palette entries also used by the background art.
-    dmaCopyWords(3, playBgPal, BG_PALETTE_SUB, playBgPalLen);
-    BG_PALETTE_SUB[7 * 16 + 15] = RGB15(31, 31, 31);
-    iprintf("\x1b[37m");
-    REG_BG2CNT_SUB &= ~BG_PRIORITY_3;
-
-    ControlSurface::Initialize();
-    const PlayerControls::Rectangle buttons[] = {PlayerControls::Repeat, PlayerControls::Options};
-    for (const auto &button : buttons)
-        ControlSurface::Fill(button.x / 8, button.y / 8, button.width / 8, button.height / 8,
-                             ControlSurface::Button);
-    iprintf("\x1b[19;21H%s\x1b[20;22HSTART", Preferences::Text("Options", "Options"));
-    _lastRepeat = -1;
-
-    _msgVramCheckpoint = _subObj.GetState();
-    _msgLine1Len = 0;
-    _msgLine2Len = 0;
-    _msgVisible = false;
+    UiCanvas::Get().Initialize();
+    _headerDirty = _captionsDirty = _timelineDirty = _transportDirty = true;
+    _lastVolume = _lastMute = _lastScale = _lastRepeat = -1;
+    _titleEpoch = GetDebounceTicks();
+    Update();
+    VBlank();
 }
-
-int PlayerView::RenderColon(SpriteEntry* oam, int x, int y)
+static void TimeText(u32 seconds, char *out, size_t size)
 {
-    x += _colonOffset;
-    oam[0].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_SQUARE | y;
-    oam[0].attribute[1] = ATTR1_SIZE_8 | x;
-    oam[0].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(1) | _colonObjAddr;
-    return x + _colonWidth;
+    if (seconds >= 3600)
+        snprintf(out, size, "%lu:%02lu:%02lu", (unsigned long)(seconds / 3600),
+                 (unsigned long)(seconds / 60 % 60), (unsigned long)(seconds % 60));
+    else
+        snprintf(out, size, "%lu:%02lu", (unsigned long)(seconds / 60), (unsigned long)(seconds % 60));
 }
-
-int PlayerView::RenderSingleDigit(SpriteEntry* oam, int digit, int x, int y)
+void PlayerView::DrawHeader()
 {
-    x += _oneDigitOffset[digit];
-    oam[0].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_SQUARE | y;
-    oam[0].attribute[1] = ATTR1_SIZE_8 | x;
-    oam[0].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(1) | (_oneDigitObjAddr + digit);
-    return x + _oneDigitWidth[digit] + _oneDigitEndOffset[digit];
+    using namespace Preferences;
+    auto &ui = UiCanvas::Get();
+    ui.Fill(0, 0, 256, 49, UiCanvas::Background);
+    ui.Circle(24, 24, 16, _pressed == PlayerControls::Back ? UiCanvas::Pressed : UiCanvas::Surface);
+    ui.Fill(18, 19, 13, 2, UiCanvas::Text);
+    for (int i = 0; i < 5; ++i)
+    {
+        ui.Pixel(18 + i, 19 - i, UiCanvas::Text);
+        ui.Pixel(18 + i, 20 + i, UiCanvas::Text);
+    }
+    ui.Centered(24, 27, "B", UiCanvas::Muted);
+    int titleWidth = ui.Width(_title, UiCanvas::Heading);
+    ui.TextAt(48 - _titleOffset, 7, _title, UiCanvas::Bright, 48, 240, UiCanvas::Heading);
+    if (titleWidth > 192)
+        ui.TextAt(48 - _titleOffset + titleWidth + 24, 7, _title, UiCanvas::Bright, 48, 240, UiCanvas::Heading);
+    if (_noticeVisible)
+        ui.TextAt(48, 31, _notice, UiCanvas::Accent, 48, 240);
+    else
+    {
+        char state[48], volume[24];
+        snprintf(state, sizeof(state), "%s / %s", _playing ? Text("Playing", "Lecture") : Text("Paused", "Pause"),
+                 values[Scale] ? Text("Stretch", "Etirer") : Text("Fit", "Adapter"));
+        snprintf(volume, sizeof(volume), "%s", Text("Muted", "Muet"));
+        if (!values[Mute])
+            snprintf(volume, sizeof(volume), "Vol %d%%", (values[Volume] * 100 + 63) / 127);
+        int right = 240 - ui.Width(volume);
+        ui.TextAt(48, 31, state, UiCanvas::Muted, 48, right - 8);
+        ui.TextAt(right, 31, volume, UiCanvas::Muted);
+    }
+    ui.Fill(16, 48, 224, 1, UiCanvas::Line);
 }
-
-int PlayerView::RenderDoubleDigit(SpriteEntry* oam, int digits, int x, int y)
+void PlayerView::DrawCaptions()
 {
-    x += _twoDigitOffset[digits];
-    oam[0].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_WIDE | y;
-    oam[0].attribute[1] = ATTR1_SIZE_8 | x;
-    oam[0].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(1) | (_twoDigitObjAddr + digits * 2);
-    return x + _twoDigitWidth[digits] + _twoDigitEndOffset[digits];
+    auto &ui = UiCanvas::Get();
+    ui.Fill(0, 50, 256, 53, UiCanvas::Background);
+    char lines[3][129] = {};
+    int count = 0, maximum = *_diagnostics ? 2 : 3;
+    const char *text = _caption;
+    while (*text && count < maximum)
+    {
+        size_t take = 0, space = 0;
+        while (text[take] && take < 128)
+        {
+            lines[count][take] = text[take];
+            lines[count][take + 1] = 0;
+            if (ui.Width(lines[count]) > 224) break;
+            if (text[take] == ' ') space = take;
+            ++take;
+        }
+        if (text[take] && space) take = space;
+        if (!take) take = 1;
+        memcpy(lines[count], text, take);
+        lines[count++][take] = 0;
+        text += take;
+        while (*text == ' ') ++text;
+    }
+    int y = 55 + (maximum * 13 - count * 13) / 2;
+    for (int row = 0; row < count; ++row)
+        ui.Centered(128, y + row * 13, lines[row], UiCanvas::Text);
+    if (*_diagnostics)
+        ui.TextAt(16, 88, _diagnostics, UiCanvas::Muted, 16, 240);
 }
-
+void PlayerView::DrawTimeline()
+{
+    auto &ui = UiCanvas::Get();
+    ui.Fill(0, 103, 256, 33, UiCanvas::Background);
+    char current[24], total[24];
+    TimeText(_curTime, current, sizeof(current));
+    TimeText(_totalTime, total, sizeof(total));
+    ui.TextAt(16, 105, current, UiCanvas::Text);
+    ui.TextAt(240 - ui.Width(total), 105, total, UiCanvas::Muted);
+    ui.Fill(16, 124, 224, 3, UiCanvas::Line);
+    int width = _totalTime ? (u64)_curTime * 224 / _totalTime : 0;
+    if (width > 224) width = 224;
+    ui.Fill(16, 124, width, 3, UiCanvas::Accent);
+    ui.Circle(16 + width, 125, 3, UiCanvas::Accent);
+}
+void PlayerView::DrawTransport()
+{
+    using namespace PlayerControls;
+    auto &ui = UiCanvas::Get();
+    ui.Fill(0, 136, 256, 56, UiCanvas::Background);
+    for (int b = Repeat; b <= Options; ++b)
+    {
+        int x = Buttons[b].x + Buttons[b].width / 2;
+        if (_pressed == b && b != PlayPause)
+            ui.Circle(x, 155, 17, UiCanvas::Pressed);
+    }
+    auto repeat = Preferences::values[Preferences::Repeat] ? UiCanvas::Accent : UiCanvas::Muted;
+    ui.Fill(20, 150, 16, 2, repeat);
+    ui.Fill(20, 160, 16, 2, repeat);
+    for (int i = 0; i < 5; ++i)
+    {
+        ui.Pixel(35 - i, 150 - i, repeat); ui.Pixel(35 - i, 151 + i, repeat);
+        ui.Pixel(20 + i, 160 - i, repeat); ui.Pixel(20 + i, 161 + i, repeat);
+    }
+    ui.Fill(66, 148, 2, 15, UiCanvas::Text);
+    ui.Fill(188, 148, 2, 15, UiCanvas::Text);
+    for (int row = -7; row <= 7; ++row)
+    {
+        ui.Fill(69 + abs(row), 155 + row, 9 - abs(row), 1, UiCanvas::Text);
+        ui.Fill(178, 155 + row, 9 - abs(row), 1, UiCanvas::Text);
+    }
+    ui.Circle(128, 155, 18, _pressed == PlayPause ? UiCanvas::AccentLight : UiCanvas::Accent);
+    if (_playing)
+    {
+        ui.Fill(122, 148, 4, 15, UiCanvas::Background);
+        ui.Fill(130, 148, 4, 15, UiCanvas::Background);
+    }
+    else
+        for (int row = -7; row <= 7; ++row)
+            ui.Fill(125, 155 + row, 10 - abs(row), 1, UiCanvas::Background);
+    for (int x : {220, 228, 236}) ui.Circle(x, 155, 2, UiCanvas::Text);
+    ui.Centered(28, 177, Preferences::Text("Repeat", "Boucle"), repeat);
+    ui.Centered(76, 177, Preferences::Text("L Prev", "L Prec"), UiCanvas::Muted);
+    ui.Centered(128, 177, "A", UiCanvas::Muted);
+    ui.Centered(180, 177, Preferences::Text("R Next", "R Suiv"), UiCanvas::Muted);
+    ui.Centered(228, 177, "Options", UiCanvas::Muted);
+}
 void PlayerView::Update()
 {
-    _subOam.Clear();
-
-    int msgOamCount = 0;
-    DrawDetails();
-    int totalOams = 14 + msgOamCount;
-    SpriteEntry* oams = _subOam.AllocOams(totalOams);
-    memcpy(&oams[0], _curTimeOams, sizeof(_curTimeOams));
-    memcpy(&oams[5], _totalTimeOams, sizeof(_totalTimeOams));
-
-    oams[11].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_SQUARE | 140;
-    oams[11].attribute[1] = ATTR1_SIZE_32 | 110;
-    oams[11].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(3) | _circleObjAddr;
-    oams[12].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_TALL | 140;
-    oams[12].attribute[1] = ATTR1_SIZE_16 | (110 + 32);
-    oams[12].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(3) | (_circleObjAddr + 16);
-    oams[13].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_WIDE | (140 + 32 - 4);
-    oams[13].attribute[1] = ATTR1_SIZE_16 | ATTR1_FLIP_Y | 110;
-    oams[13].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(3) | _circleObjAddr;
-
-    oams[10].attribute[0] = ATTR0_NORMAL | ATTR0_TYPE_NORMAL | ATTR0_COLOR_16 | ATTR0_SQUARE | (146 + 4);
-    oams[10].attribute[1] = ATTR1_SIZE_16 | (116 + 4);
-    oams[10].attribute[2] = ATTR2_PRIORITY(3) | ATTR2_PALETTE(2) | (_playing ? _pauseIconObjAddr : _playIconObjAddr);
+    using namespace Preferences;
+    u32 now = GetDebounceTicks();
+    if (_noticeVisible && (int32_t)(now - _noticeUntil) >= 0)
+    {
+        _noticeVisible = false;
+        _headerDirty = true;
+    }
+    int width = UiCanvas::Get().Width(_title, UiCanvas::Heading);
+    int offset = width > 192 ? ((now - _titleEpoch) / 1636) % (width + 24) : 0;
+    if (_titleOffset != offset) { _titleOffset = offset; _headerDirty = true; }
+    if (_lastVolume != values[Volume] || _lastMute != values[Mute] || _lastScale != values[Scale])
+    {
+        _lastVolume = values[Volume]; _lastMute = values[Mute]; _lastScale = values[Scale];
+        _headerDirty = true;
+    }
+    if (_lastRepeat != values[Repeat]) { _lastRepeat = values[Repeat]; _transportDirty = true; }
+    if (_headerDirty) DrawHeader();
+    if (_captionsDirty) DrawCaptions();
+    if (_timelineDirty) DrawTimeline();
+    if (_transportDirty) DrawTransport();
+    _headerDirty = _captionsDirty = _timelineDirty = _transportDirty = false;
 }
-
-void PlayerView::SetMessage(const char* line1, const char* line2)
+void PlayerView::VBlank() { UiCanvas::Get().Present(); }
+void PlayerView::SetTotalTime(u32 time) { _totalTime = time; _timelineDirty = true; }
+void PlayerView::SetCurrentTime(u32 time)
 {
-    snprintf(_notice1, sizeof(_notice1), "%s", line1 ? line1 : "");
-    snprintf(_notice2, sizeof(_notice2), "%s", line2 ? line2 : "");
-    _msgVisible = true;
-    _msgHideAtTime = GetDebounceTicks() + 32728u * 3;
+    if (_curTime != time) { _curTime = time; _timelineDirty = true; }
 }
-
-void PlayerView::SetDetails(const char *title, const char *state, const char *caption,
-                            const char *diagnostics)
+void PlayerView::SetPlaying(bool playing)
 {
-    snprintf(_title, sizeof(_title), "%s", title ? title : "");
-    snprintf(_state, sizeof(_state), "%s", state ? state : "");
-    snprintf(_caption, sizeof(_caption), "%s", caption ? caption : "");
-    snprintf(_diagnostics, sizeof(_diagnostics), "%s", diagnostics ? diagnostics : "");
-    DrawDetails();
+    if (_playing != playing) { _playing = playing; _headerDirty = _transportDirty = true; }
 }
-
-void PlayerView::DrawDetails()
+void PlayerView::SetPressed(PlayerControls::Button button)
 {
-    using Preferences::Text;
-    int repeat = Preferences::values[Preferences::Repeat];
-    if (_lastRepeat != repeat)
+    if (_pressed != button)
     {
-        iprintf("\x1b[19;3H%-7s\x1b[20;3H%-7s", Text("Repeat", "Boucle"),
-                repeat ? Text("On", "Oui") : Text("Off", "Non"));
-        _lastRepeat = repeat;
+        _pressed = button;
+        _headerDirty = _transportDirty = true;
+        Update();
+        VBlank();
     }
-    char lines[12][33] = {};
-    char title[256];
-    MediaText::DisplayText(_title, strlen(_title), title, sizeof(title));
-    size_t length = strlen(title), offset = 0;
-    if (length > 32)
-        offset = (GetDebounceTicks() / 8192) % (length + 4);
-    for (unsigned i = 0; i < 32 && i < length; ++i)
-    {
-        size_t at = (offset + i) % (length + 4);
-        lines[0][i] = at < length ? title[at] : ' ';
-    }
-    snprintf(lines[2], 33, "%s",
-             (_playing ? Text("A: pause B: videos L/R: skip", "A: pause B: videos L/R: saut")
-                       : Text("A: play  B: videos L/R: skip", "A: jouer B: videos L/R: saut")));
-    snprintf(lines[3], 33, "%s", Text("START: options  SELECT: shuffle", "START: options SELECT: aleatoire"));
-    snprintf(lines[4], 33, "%.32s", _state);
-    if (_msgVisible && (int32_t)(GetDebounceTicks() - _msgHideAtTime) >= 0)
-        _msgVisible = false;
-    if (_msgVisible)
-    {
-        snprintf(lines[6], 33, "%s", _notice1);
-        snprintf(lines[7], 33, "%s", _notice2);
-    }
-    else
-    {
-        size_t used = 0, total = strlen(_caption);
-        for (int row = 6; row < 10 && used < total; ++row)
-        {
-            size_t count = total - used;
-            if (count > 32)
-            {
-                count = 32;
-                while (count > 0 && _caption[used + count] != ' ')
-                    --count;
-                if (!count)
-                    count = 32;
-            }
-            memcpy(lines[row], _caption + used, count);
-            used += count;
-            while (used < total && _caption[used] == ' ')
-                ++used;
-        }
-    }
-    snprintf(lines[11], 33, "%.32s", _diagnostics);
-    for (int row = 0; row < 12; ++row)
-        if (strcmp(lines[row], _lastLines[row]))
-        {
-            iprintf("\x1b[%d;0H%-32s", row, lines[row]);
-            strcpy(_lastLines[row], lines[row]);
-        }
 }
-
-void PlayerView::VBlank()
+void PlayerView::SetDetails(const char *title, const char *caption, const char *diagnostics)
 {
-    _subOam.Apply(OAM_SUB);
-
-    SUB_WIN0_X0 = 16;
-    u32 width;
-    if (_curTime >= _totalTime)
-        width = 224;
-    else
-        width = (_curTime * 224 * _invTotalTime + 0x400000) >> 23;
-    SUB_WIN0_X1 = 16 + width;
-    SUB_WIN0_Y0 = 117;
-    SUB_WIN0_Y1 = 117 + 4;
+    char display[256];
+    MediaText::DisplayText(title ? title : "", title ? strlen(title) : 0, display, sizeof(display));
+    size_t length = strlen(display);
+    if (length > 3 && !strcasecmp(display + length - 3, ".fv")) display[length - 3] = 0;
+    if (strcmp(_title, display))
+    {
+        strcpy(_title, display); _titleEpoch = GetDebounceTicks(); _headerDirty = true;
+    }
+    if (!caption) caption = "";
+    if (!diagnostics) diagnostics = "";
+    if (strcmp(_caption, caption) || strcmp(_diagnostics, diagnostics))
+    {
+        snprintf(_caption, sizeof(_caption), "%s", caption);
+        snprintf(_diagnostics, sizeof(_diagnostics), "%s", diagnostics);
+        _captionsDirty = true;
+    }
+    Update();
+    VBlank();
 }
-
-void PlayerView::SetTotalTime(u32 totalTime)
+void PlayerView::SetMessage(const char *first, const char *second)
 {
-    _totalTime = totalTime > 35999 ? 35999 : totalTime;
-
-    _invTotalTime = _totalTime ? 0x800000 / _totalTime : 0;
-
-    u32 totalH = _totalTime / 3600;
-    u32 totalM = _totalTime / 60 % 60;
-    u32 totalS = _totalTime % 60;
-
-    int x = 240;
-    x -= _twoDigitWidth[totalS];
-    x -= _twoDigitOffset[totalS];
-    x -= _colonWidth;
-    x -= _colonOffset;
-    x -= _twoDigitEndOffset[totalM];
-    x -= _twoDigitWidth[totalM];
-    x -= _twoDigitOffset[totalM];
-    if (totalH != 0)
-    {
-        x -= _colonWidth;
-        x -= _colonOffset;
-        x -= _oneDigitEndOffset[totalH];
-        x -= _oneDigitWidth[totalH];
-        x -= _oneDigitOffset[totalH];
-        x = RenderSingleDigit(&_totalTimeOams[0], totalH, x, 101);
-        x = RenderColon(&_totalTimeOams[1], x, 101);
-    }
-    else
-    {
-        _totalTimeOams[0].attribute[0] = 0x200;
-        _totalTimeOams[1].attribute[0] = 0x200;
-    }
-    x = RenderDoubleDigit(&_totalTimeOams[2], totalM, x, 101);
-    x = RenderColon(&_totalTimeOams[3], x, 101);
-    x = RenderDoubleDigit(&_totalTimeOams[4], totalS, x, 101);
-}
-
-void PlayerView::SetCurrentTime(u32 currentTime)
-{
-    _curTime = currentTime > 35999 ? 35999 : currentTime;
-
-    int x = 16;
-    if (_totalTime >= 3600)
-    {
-        x = RenderSingleDigit(&_curTimeOams[0], _curTime / 3600, x, 101);
-        x = RenderColon(&_curTimeOams[1], x, 101);
-    }
-    else
-    {
-        _curTimeOams[0].attribute[0] = 0x200;
-        _curTimeOams[1].attribute[0] = 0x200;
-    }
-    x = RenderDoubleDigit(&_curTimeOams[2], _curTime / 60 % 60, x, 101);
-    x = RenderColon(&_curTimeOams[3], x, 101);
-    x = RenderDoubleDigit(&_curTimeOams[4], _curTime % 60, x, 101);
+    char message[192];
+    snprintf(message, sizeof(message), "%s%s%s", first ? first : "", first && *first && second && *second ? " / " : "",
+             second ? second : "");
+    MediaText::DisplayText(message, strlen(message), _notice, sizeof(_notice));
+    _noticeVisible = true;
+    _noticeUntil = GetDebounceTicks() + 32728u * 3;
+    _headerDirty = true;
 }

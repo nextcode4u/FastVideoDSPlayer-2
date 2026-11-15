@@ -5,8 +5,8 @@ NtftFont::NtftFont(const void* data)
 {
     const ntft_header_t* font = (const ntft_header_t*)data;
     _font.header = font;
-    _font.characterInfo = (const ntft_cinfo_t*)((u32)font + font->charInfoOffset);
-    _font.glyphData = (const ntft_gdata_t*)((u32)font + font->glyphDataOffset);
+    _font.characterInfo = (const ntft_cinfo_t*)((const u8*)font + font->charInfoOffset);
+    _font.glyphData = (const ntft_gdata_t*)((const u8*)font + font->glyphDataOffset);
 }
 
 void NtftFont::MeasureString(const char* text, int& width, int& height) const

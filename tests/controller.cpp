@@ -29,9 +29,10 @@ static fv_scale_mode_t scaleMode = FV_SCALE_FIT;
 extern bool gScreenSwapped;
 
 u32 GetDebounceTicks() { static u32 ticks; return ticks += 10000; }
-NtftFont::NtftFont(const void*) : _font{} {}
-PlayerView::PlayerView() : _robotoRegular10(nullptr) {}
+PlayerView::PlayerView() {}
 void PlayerView::Initialize() {}
+void PlayerView::SetPlaying(bool) {}
+void PlayerView::SetPressed(PlayerControls::Button) {}
 void PlayerView::Update() {}
 void PlayerView::VBlank() {}
 void PlayerView::SetTotalTime(u32) {}
@@ -133,21 +134,31 @@ int main()
     assert(input(controller, 0) == C::NAV_ACTION_NONE);
 
     // Touch buttons activate on release, and dragging away cancels the tap.
-    testTouch = {200, 155};
+    testTouch = {228, 155};
     assert(input(controller, KEY_TOUCH) == C::NAV_ACTION_NONE);
     assert(input(controller, 0) == C::NAV_ACTION_OPTIONS);
-    testTouch = {50, 155};
+    testTouch = {28, 155};
     assert(input(controller, KEY_TOUCH) == C::NAV_ACTION_NONE);
     assert(input(controller, 0) == C::NAV_ACTION_TOGGLE_LOOP);
-    testTouch = {200, 155};
+    testTouch = {228, 155};
     input(controller, KEY_TOUCH);
     testTouch = {150, 155};
     input(controller, KEY_TOUCH);
     assert(input(controller, 0) == C::NAV_ACTION_NONE);
 
+    testTouch = {76, 155};
+    input(controller, KEY_TOUCH);
+    assert(input(controller, 0) == C::NAV_ACTION_PREV);
+    testTouch = {180, 155};
+    input(controller, KEY_TOUCH);
+    assert(input(controller, 0) == C::NAV_ACTION_NEXT);
+    testTouch = {24, 24};
+    input(controller, KEY_TOUCH);
+    assert(input(controller, 0) == C::NAV_ACTION_EXIT);
+
     // Video-on-touch-screen has no invisible buttons. Lid closure cancels taps.
     gScreenSwapped = true;
-    testTouch = {200, 155};
+    testTouch = {228, 155};
     assert(input(controller, KEY_TOUCH) == C::NAV_ACTION_SHOW_INFO);
     assert(input(controller, 0) == C::NAV_ACTION_NONE);
     gScreenSwapped = false;

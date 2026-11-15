@@ -21,7 +21,7 @@ bool gScreenSwapped = false;
 PlayerController::PlayerController(fv_player_t* player)
     : _inputRepeater(KEY_LEFT | KEY_RIGHT, 12, 3), _player(player), _subScreenState(SUB_SCREEN_STATE_ACTIVE),
       _subScreenStateCounter(0), _subBacklightOff(false), _playing(true), _lastTime(-1), _seekPenDown(false),
-      _playPausePenDown(false), _seekLastFrame(-1), _seekKeyFrame(0), _pendingNavAction(NAV_ACTION_NONE),
+      _seekLastFrame(-1), _seekKeyFrame(0), _pendingNavAction(NAV_ACTION_NONE),
       _videoEnded(false)
 {
     for (int i = 0; i < 5; i++)
@@ -118,65 +118,42 @@ void PlayerController::UpdateTouch()
         return;
     }
 
+    using namespace PlayerControls;
     if (_inputProvider.Triggered(KEY_TOUCH))
     {
-        if (touch.px >= 16 && touch.px < 240 && touch.py >= 104 && touch.py < 136)
+        if (Timeline.Contains(touch.px, touch.py))
         {
             _seekPenDown = true;
             _seekLastFrame = -1;
         }
-        else if (PlayerControls::Options.Contains(touch.px, touch.py))
-        {
-            _touchButton = NAV_ACTION_OPTIONS;
-        }
-        else if (PlayerControls::Repeat.Contains(touch.px, touch.py))
-        {
-            _touchButton = NAV_ACTION_TOGGLE_LOOP;
-        }
-        else if (touch.px >= 110 && touch.px < 110 + 36 && touch.py >= 140 && touch.py < 140 + 36)
-        {
-            _playPausePenDown = true;
-        }
         else
         {
-            // tapped anywhere else on the touch screen: show the info toast
-            // (filename + loop/random state) on demand
-            _pendingNavAction = NAV_ACTION_SHOW_INFO;
+            _touchButton = Hit(touch.px, touch.py);
+            _view.SetPressed(_touchButton);
         }
     }
-
     if (_inputProvider.Released(KEY_TOUCH))
     {
-        if (_seekPenDown && _seekLastFrame >= 0)
-            SeekFrame(_seekLastFrame);
+        if (_seekPenDown && _seekLastFrame >= 0) SeekFrame(_seekLastFrame);
         _seekPenDown = false;
-        if (_touchButton != NAV_ACTION_NONE)
+        switch (_touchButton)
         {
-            _pendingNavAction = _touchButton;
-            _touchButton = NAV_ACTION_NONE;
+            case Back: _pendingNavAction = NAV_ACTION_EXIT; break;
+            case Repeat: _pendingNavAction = NAV_ACTION_TOGGLE_LOOP; break;
+            case Previous: _pendingNavAction = NAV_ACTION_PREV; break;
+            case PlayPause: TogglePlayPause(); break;
+            case Next: _pendingNavAction = NAV_ACTION_NEXT; break;
+            case Options: _pendingNavAction = NAV_ACTION_OPTIONS; break;
+            default: break;
         }
-
-        if (_playPausePenDown)
-        {
-            TogglePlayPause();
-            _playPausePenDown = false;
-        }
+        _touchButton = None;
+        _view.SetPressed(None);
     }
-
-    if (_inputProvider.Current(KEY_TOUCH) && _touchButton != NAV_ACTION_NONE)
+    if (_inputProvider.Current(KEY_TOUCH) && _touchButton != None &&
+        !Buttons[_touchButton].Contains(touch.px, touch.py))
     {
-        const PlayerControls::Rectangle &button = _touchButton == NAV_ACTION_OPTIONS
-                                                     ? PlayerControls::Options : PlayerControls::Repeat;
-        if (!button.Contains(touch.px, touch.py))
-            _touchButton = NAV_ACTION_NONE;
-    }
-
-    if (_inputProvider.Current(KEY_TOUCH) && _playPausePenDown)
-    {
-        if (!(touch.px >= 110 && touch.px < 110 + 36 && touch.py >= 140 && touch.py < 140 + 36))
-        {
-            _playPausePenDown = false;
-        }
+        _touchButton = None;
+        _view.SetPressed(None);
     }
 
     if (_inputProvider.Current(KEY_TOUCH) && _seekPenDown)
@@ -220,8 +197,9 @@ void PlayerController::UpdateKeys()
     // optional picture/screen shortcuts when a direction is already held.
     if (!startDebounced && _inputProvider.Triggered(KEY_START))
     {
-        _touchButton = NAV_ACTION_NONE;
-        _seekPenDown = _playPausePenDown = false;
+        _touchButton = PlayerControls::None;
+        _view.SetPressed(PlayerControls::None);
+        _seekPenDown = false;
         _lastNavActionVBlank[1] = now;
         if (_inputProvider.Current(KEY_UP))
         {
@@ -435,8 +413,8 @@ PlayerController::NavAction PlayerController::Update()
             _playing = false;
         }
         _seekPenDown = false;
-        _playPausePenDown = false;
-        _touchButton = NAV_ACTION_NONE;
+        _touchButton = PlayerControls::None;
+        _view.SetPressed(PlayerControls::None);
         _pendingNavAction = NAV_ACTION_NONE;
         _inputRepeater.Reset();
         if (_inputProvider.Released(KEY_LID))

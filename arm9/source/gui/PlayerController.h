@@ -32,10 +32,10 @@ public:
   {
       return _playing;
   }
-  void SetDetails(const char *title, const char *state, const char *caption, const char *diagnostics)
+  void SetDetails(const char *title, const char *caption, const char *diagnostics)
   {
       _captionsVisible = caption && *caption;
-      _view.SetDetails(title, state, caption, diagnostics);
+      _view.SetDetails(title, caption, diagnostics);
   }
 
     // Re-lights the sub screen (backlight + master brightness) and clears the
@@ -71,8 +71,7 @@ private:
     int _lastTime;
 
     bool _seekPenDown;
-    bool _playPausePenDown;
-    NavAction _touchButton = NAV_ACTION_NONE;
+    PlayerControls::Button _touchButton = PlayerControls::None;
     int _seekLastFrame;
     int _seekKeyFrame;
 
